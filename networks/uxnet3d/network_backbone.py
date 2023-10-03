@@ -10,12 +10,11 @@ from typing import Tuple, Union
 
 import torch.nn as nn
 import torch.nn.functional as F
-from monai.networks.blocks.dynunet_block import UnetOutBlock
-from monai.networks.blocks.unetr_block import UnetrBasicBlock, UnetrUpBlock
-
 from lib.models.tools.module_helper import ModuleHelper
 from lib.utils.tools.logger import Logger as Log
-from networks.UXNet_3D.uxnet_encoder import uxnet_conv
+from monai.networks.blocks.dynunet_block import UnetOutBlock
+from monai.networks.blocks.unetr_block import UnetrBasicBlock, UnetrUpBlock
+from networks.uxnet3d.uxnet_encoder import uxnet_conv
 
 
 class ProjectionHead(nn.Module):

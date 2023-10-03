@@ -18,13 +18,13 @@ from torch.optim import SGD, Adam, AdamW
 from tqdm import tqdm
 
 from dataset import AMOSDataset
-from networks.UXNet_3D.network_backbone import UXNETDecoder, UXNETEncoder
+from networks.uxnet3d.network_backbone import UXNETDecoder, UXNETEncoder
 
 device = torch.device("cuda")
 
 
 class SegmentationModule(nn.Module):
-    def __init__(self, criterion=DiceCELoss(to_onehot_y=True), optimizer="AdamW", lr=0.0001):
+    def __init__(self, criterion=DiceCELoss(to_onehot_y=True, softmax=True), optimizer="AdamW", lr=0.0001):
         super().__init__()
         self.feat_extractor = UXNETEncoder(in_chans=1)
         self.predictor = UXNETDecoder(out_chans=16)
@@ -43,6 +43,7 @@ class SegmentationModule(nn.Module):
     def forward(self, x):
         feature, skip_outputs = self.feat_extractor(x)
         y = self.predictor((feature, skip_outputs))
+        # y = self.net(x)
         return y
 
     def update(self, x, y):
@@ -54,9 +55,10 @@ class SegmentationModule(nn.Module):
         self.optimizer.step()
         return loss.item()
 
-    def inference(self, x, roi_size=(96, 96, 96), batch_size=2):
+    def inference(self, x, roi_size=(96, 96, 96), sw_batch_size=2):
         # Using sliding windows
-        return sliding_window_inference(x, roi_size, batch_size, self)
+        self.eval()
+        return sliding_window_inference(x, roi_size, sw_batch_size, self.forward)
 
     def save(self, checkpoint_dir):
         torch.save(self.feat_extractor.state_dict, os.path.join(checkpoint_dir, "feat_extractor_state.pth"))
@@ -65,7 +67,12 @@ class SegmentationModule(nn.Module):
 
 class SegmentationTrainer:
     def __init__(
-        self, max_iter=40000, metric=DiceMetric(), eval_step=500, checkpoint_dir="./default_ckpt/", num_class=16
+        self,
+        max_iter=40000,
+        metric=DiceMetric(include_background=True, reduction="mean", get_not_nans=False),
+        eval_step=500,
+        checkpoint_dir="./default_ckpt/",
+        num_class=16,
     ):
         self.max_iter = max_iter
         self.metric = metric
@@ -78,11 +85,10 @@ class SegmentationTrainer:
     def validation(self, module, dataloader, global_step=None):
         module.eval()
         val_metrics = []
-        val_pbar = tqdm(dataloader)
+        val_pbar = tqdm(dataloader, dynamic_ncols=True)
         metric_name = self.metric.__class__.__name__
         train_val_desc = "Validate ({} Steps) ({}={:2.5f})"
         simple_val_desc = "Validate ({}={:2.5f})"
-
         with torch.no_grad():
             for batch in val_pbar:
                 # Infer, decollate data into list of samples, and proprocess both predictions and labels
@@ -101,14 +107,13 @@ class SegmentationTrainer:
                     val_pbar.set_description(train_val_desc.format(global_step, metric_name, batch_metric))
                 else:
                     val_pbar.set_description(simple_val_desc.format(metric_name, batch_metric))
-
         mean_val_metric = np.mean(val_metrics)
         return mean_val_metric
 
     def train(self, module, train_dataloader, val_dataloader):
         self.show_training_info(module, train_dataloader, val_dataloader)
         best_metric = 0
-        train_pbar = tqdm(range(self.max_iter))
+        train_pbar = tqdm(range(self.max_iter), dynamic_ncols=True)
 
         for step in train_pbar:
             module.train()
@@ -140,6 +145,8 @@ class SegmentationTrainer:
         print("--------")
 
 
+# CLI tool
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Segementation branch of DANN, using AMOS dataset.")
     ## Input data hyperparameters
@@ -156,6 +163,7 @@ if __name__ == "__main__":
     parser.add_argument("--max_iter", type=int, default=40000, help="Maximum iteration steps for training")
     parser.add_argument("--eval_step", type=int, default=500, help="Per steps to perform validation")
     parser.add_argument("--deterministic", action="store_true")
+    parser.add_argument("--dev", action="store_true")
 
     ## Efficiency hyperparameters
     # parser.add_argument("--gpu", type=str, default="0", help="your GPU number")
@@ -166,7 +174,7 @@ if __name__ == "__main__":
 
     if args.deterministic:
         set_determinism(seed=0)
-        print("[deterministic]")
+        print("[deterministic mode]")
 
     train_dataset = AMOSDataset(
         root_dir=args.root,
@@ -175,6 +183,7 @@ if __name__ == "__main__":
         spatial_dim=3,
         cache_rate=args.cache_rate,
         num_workers=args.num_workers,
+        dev=args.dev,
     )
     train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, pin_memory=True)
     val_dataset = AMOSDataset(
@@ -184,8 +193,9 @@ if __name__ == "__main__":
         spatial_dim=3,
         cache_rate=args.cache_rate,
         num_workers=args.num_workers,
+        dev=args.dev,
     )
-    val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, pin_memory=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=1, shuffle=False, pin_memory=True)
 
     module = SegmentationModule(optimizer=args.optim, lr=args.lr)
     module.to(device)
