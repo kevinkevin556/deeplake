@@ -1,5 +1,5 @@
 # Neural Network checkpoints
-default_ckpt/
+checkpoints/
 *.pt
 *.pth
 *.ckpt

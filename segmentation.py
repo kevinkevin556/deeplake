@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import pdb
 from datetime import datetime
@@ -17,7 +18,7 @@ from monai.utils import set_determinism
 from torch import nn
 from torch.optim import SGD, Adam, AdamW
 from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from lib.loss.target_adaptive_loss import TargetAdaptiveLoss
 from networks.uxnet3d.network_backbone import UXNETDecoder, UXNETEncoder
@@ -62,8 +63,13 @@ class SegmentationModule(nn.Module):
         return sliding_window_inference(x, roi_size, sw_batch_size, self.forward)
 
     def save(self, checkpoint_dir):
-        torch.save(self.feat_extractor.state_dict, os.path.join(checkpoint_dir, "feat_extractor_state.pth"))
-        torch.save(self.predictor.state_dict, os.path.join(checkpoint_dir, "predictor_state.pth"))
+        Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
+        torch.save(self.feat_extractor.state_dict(), os.path.join(checkpoint_dir, "feat_extractor_state.pth"))
+        torch.save(self.predictor.state_dict(), os.path.join(checkpoint_dir, "predictor_state.pth"))
+
+    def load(self, checkpoint_dir):
+        self.feat_extractor.load_state_dict(torch.load(os.path.join(checkpoint_dir, "feat_extractor_state.pth")))
+        self.predictor.load_state_dict(torch.load(os.path.join(checkpoint_dir, "predictor_state.pth")))
 
 
 class SegmentationTrainer:
@@ -73,15 +79,16 @@ class SegmentationTrainer:
         metric=DiceMetric(include_background=True, reduction="mean", get_not_nans=False),
         eval_step=500,
         checkpoint_dir="./default_ckpt/",
-        num_class=16,
     ):
         self.max_iter = max_iter
         self.metric = metric
         self.eval_step = eval_step
-        self.checkpoint_dir = checkpoint_dir + "/" + datetime.now().strftime("%Y%m%d-%H%M%S")
-        Path(self.checkpoint_dir).mkdir(parents=True, exist_ok=True)
+        self.checkpoint_dir = Path(checkpoint_dir) / datetime.now().strftime("%Y%m%d-%H%M%S")
 
-        self.postprocess = {"x": AsDiscrete(argmax=True, to_onehot=num_class), "y": AsDiscrete(to_onehot=num_class)}
+        self.postprocess = {
+            "x": AsDiscrete(argmax=True, to_onehot=AMOSDataset.num_classes),
+            "y": AsDiscrete(to_onehot=AMOSDataset.num_classes),
+        }
 
     def validation(self, module, dataloader, global_step=None):
         module.eval()
@@ -127,14 +134,14 @@ class SegmentationTrainer:
             writer.add_scalar(f"train/{module.criterion.__class__.__name__}", loss, step)
             # Validation
             if ((step + 1) % self.eval_step == 0) or (step == self.max_iter - 1):
-                val_metric = self.validation(module, val_dataloader, global_step=step)
+                val_metric = self.validation(module, val_dataloader, global_step=step + 1)
                 writer.add_scalar(f"train/{self.metric.__class__.__name__}", val_metric, step)
                 if val_metric > best_metric:
                     module.save(self.checkpoint_dir)
-                    print(f"Model saved! Validation: (New) {val_metric:2.7f} > (Old) {best_metric:2.7f}")
+                    tqdm.write(f"Model saved! Validation: (New) {val_metric:2.7f} > (Old) {best_metric:2.7f}")
                     best_metric = val_metric
                 else:
-                    print(f"No improvement. Validation: (New) {val_metric:2.7f} <= (Old) {best_metric:2.7f}")
+                    tqdm.write(f"\nNo improvement. Validation: (New) {val_metric:2.7f} <= (Old) {best_metric:2.7f}")
 
     def show_training_info(self, module, train_dataloader, val_dataloader):
         print("--------")
@@ -155,22 +162,28 @@ class SegmentationTrainer:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Segementation branch of DANN, using AMOS dataset.")
-    ## Input data hyperparameters
+    # Input data hyperparameters
     parser.add_argument("--root", type=str, default="", required=True, help="Root folder of all your images and labels")
-    parser.add_argument("--output", type=str, default="", required=True, help="Output folder for the best model")
+    parser.add_argument("--output", type=str, default="checkpoints", help="Output folder for the best model")
     parser.add_argument("--modality", type=str, default="ct", help="Modality type: ct / mr / ct+mr")
     parser.add_argument("--masked", action="store_true", help="If true, train with annotation-masked data")
 
-    ## Input model & training hyperparameters
+    # Input model & training hyperparameters
+    parser.add_argument("--mode", type=str, default="train", help="Mode: train / test")
     parser.add_argument(
-        "--mode",
-        type=int,
-        default=0,
-        help="Mode: 0 - train on the whole training set / 1 - split training set into training and val set",
+        "--pretrained",
+        type=str,
+        help="Checkpointing dir of pretrained network for testing or continuing training procedure.",
+    )
+    parser.add_argument(
+        "--train_data",
+        type=str,
+        default="split",
+        help="Training data: 'all' (training sample) / 'split' (into training and val sets)",
     )
     parser.add_argument("--batch_size", type=int, default="1", help="Batch size for subject input")
     # parser.add_argument("--crop_sample", type=int, default="2", help="Number of cropped sub-volumes for each subject")
-    parser.add_argument("--loss", type=str, default="dice2", help="Loss: dice2 / tal")
+    parser.add_argument("--loss", type=str, default="dice2", help="Loss: dice2 (=DiceCE) / tal")
     parser.add_argument("--lr", type=float, default=0.0001, help="Learning rate for training")
     parser.add_argument("--optim", type=str, default="AdamW", help="Optimizer types: Adam / AdamW")
     parser.add_argument("--max_iter", type=int, default=40000, help="Maximum iteration steps for training")
@@ -179,7 +192,6 @@ if __name__ == "__main__":
     parser.add_argument("--dev", action="store_true", help="Develop mode. Set max_iter = 5, eval_step = 5.")
 
     ## Efficiency hyperparameters
-    # parser.add_argument("--gpu", type=str, default="0", help="your GPU number")
     parser.add_argument("--cache_rate", type=float, default=0.1, help="Cache rate to cache your dataset into GPUs")
     parser.add_argument("--num_workers", type=int, default=2, help="Number of workers")
 
@@ -188,7 +200,7 @@ if __name__ == "__main__":
     # Whether train without randomness
     if args.deterministic:
         set_determinism(seed=0)
-        print("[deterministic mode]")
+        print("* Deterministic = True")
     # Whether train with annotation-masked dataset
     if args.masked:
         # bg_mapping: mask_mapping used to mask some class
@@ -203,10 +215,12 @@ if __name__ == "__main__":
         bg_mapping = None
         fg_list = list(range(AMOSDataset.num_classes))
 
-    print("Modality =", args.modality)
-    print("Foreground =", fg_list)
+    print("** Modality =", args.modality)
+    print("** Foreground =", fg_list)
 
-    if args.mode == 0:
+    # Datasets
+    print("** Training set =", args.train_data)
+    if args.train_data == "all":
         train_dataset = AMOSDataset(
             root_dir=args.root,
             modality=args.modality,
@@ -226,7 +240,7 @@ if __name__ == "__main__":
             mask_mapping=bg_mapping,
         )
         test_dataset = None
-    if args.mode == 1:  # Note: there is no shuffling, so don't set modality to "ct+mr"
+    elif args.train_data == "split":  # Note: there is no shuffling, so don't set modality to "ct+mr"
         train_dataset = AMOSDataset(
             root_dir=args.root,
             modality=args.modality,
@@ -255,11 +269,12 @@ if __name__ == "__main__":
             cache_rate=args.cache_rate,
             num_workers=args.num_workers,
             dev=args.dev,
-            mask_mapping=bg_mapping,
+            mask_mapping=None,  # Use an unmasked dataset as testing set
         )
-        if not args.dev:
-            train_dataset = train_dataset[: -int(len(train_dataset) * 0.1)]
-            val_dataset = val_dataset[-int(len(val_dataset) * 0.1) :]
+        train_dataset = train_dataset[: -int(len(train_dataset) * 0.1)]
+        val_dataset = val_dataset[-int(len(val_dataset) * 0.1) :]
+    else:
+        raise ValueError("Got an invalid input of option --train_data.")
 
     # Dataloaders
     train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, pin_memory=True)
@@ -267,15 +282,38 @@ if __name__ == "__main__":
     test_dataloader = DataLoader(test_dataset, batch_size=1, shuffle=False, pin_memory=True) if test_dataset else None
 
     # Loss functions and optimizing criterion
-    tal = TargetAdaptiveLoss(num_class=16, foreground=fg_list, device=device)
+    tal = TargetAdaptiveLoss(num_class=AMOSDataset.num_classes, foreground=fg_list, device=device)
     dice2 = DiceCELoss(include_background=True, to_onehot_y=True, softmax=True)
     criterion = dice2 if args.loss != "tal" else tal
 
-    # Train and Test
+    # Initialize module (load module if pretrained checkpoint is provided)
     module = SegmentationModule(optimizer=args.optim, lr=args.lr, criterion=criterion)
+    if args.pretrained:
+        print("** Pretrained checkpoint =", args.pretrained)
+        module.load(args.pretrained)
     module.to(device)
-    trainer = SegmentationTrainer(max_iter=args.max_iter, eval_step=args.eval_step)
-    trainer.train(module, train_dataloader, val_dataloader)
-    if test_dataloader:
-        test_metric = trainer.validation(module, test_dataloader)
-        print("Test (Final):", test_metric)
+
+    # Train or test
+    trainer = SegmentationTrainer(
+        max_iter=args.max_iter,
+        eval_step=args.eval_step,
+        checkpoint_dir=args.output,
+    )
+    print("** Mode =", args.mode)
+    if args.mode == "train":
+        # Save command-line arguments
+        Path(trainer.checkpoint_dir).mkdir(parents=True, exist_ok=True)
+        with open(Path(trainer.checkpoint_dir) / "args.json", "w") as f:
+            json.dump(vars(args), f, indent=4)
+        # Train
+        trainer.train(module, train_dataloader, val_dataloader)
+        # Test after training
+        if test_dataloader:
+            test_metric = trainer.validation(module, test_dataloader)
+            print("** Test (Final):", test_metric)
+    elif args.mode == "test":
+        if test_dataloader:
+            test_metric = trainer.validation(module, test_dataloader)
+            print("** Test (Final):", test_metric)
+    else:
+        raise ValueError("Got an invalid input of option --mode.")
