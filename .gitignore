@@ -3,6 +3,7 @@ default_ckpt/
 *.pt
 *.pth
 *.ckpt
+debug/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

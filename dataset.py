@@ -4,6 +4,7 @@ from glob import glob
 import monai
 import numpy as np
 import torch
+from monai.transforms import Transform
 
 from transforms import amos_train_transforms, amos_val_transforms
 
@@ -66,7 +67,7 @@ class AMOSDataset(monai.data.CacheDataset):
                 self.target_path = self.target_path[:n_val_dev]
 
         # Transformation
-        if transform is not None:
+        if isinstance(transform, Transform):
             pass
         elif stage == "train":
             transform = amos_train_transforms
@@ -84,6 +85,9 @@ class AMOSDataset(monai.data.CacheDataset):
 
     def __len__(self):
         return len(self.target_path)
+
+    def __getitem__(self, index):
+        pass
 
 
 class CHAOSDataset:

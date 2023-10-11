@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 from monai.transforms import (
     Activationsd,
     AddChanneld,
@@ -21,6 +22,7 @@ from monai.transforms import (
     Spacingd,
     SpatialPadd,
     ToTensord,
+    Transform,
 )
 
 amos_train_transforms = Compose(
@@ -86,3 +88,19 @@ amos_val_transforms = Compose(
         ToTensord(keys=["image", "label"]),
     ]
 )
+
+
+class AddBackgroundClass(Transform):
+    def __init__(self, background):
+        self.background = torch.tensor(background)
+
+    def __call__(self, data):
+        ch = data.shape[1]
+        if ch == 1:
+            # class lebel
+            data[torch.isin(data, self.background)] = 0
+        else:
+            # logits / one-hot encoding
+            data[:, 0, ...] += torch.sum(data[:, self.background, ...], dim=1)
+            data[:, self.background, ...] = 0
+        return data
