@@ -17,6 +17,7 @@ from monai.transforms import AsDiscrete
 from monai.utils import set_determinism
 from torch import nn
 from torch.optim import SGD, Adam, AdamW
+from torch.utils.data import ConcatDataset
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
@@ -24,6 +25,7 @@ from lib.loss.target_adaptive_loss import TargetAdaptiveLoss
 from networks.uxnet3d.network_backbone import UXNETDecoder, UXNETEncoder
 
 device = torch.device("cuda")
+crop_sample = 2
 
 
 class SegmentationModule(nn.Module):
@@ -57,9 +59,10 @@ class SegmentationModule(nn.Module):
         self.optimizer.step()
         return loss.item()
 
-    def inference(self, x, roi_size=(96, 96, 96), sw_batch_size=2):
+    def inference(self, x, roi_size=(96, 96, 96)):
         # Using sliding windows
         self.eval()
+        sw_batch_size = crop_sample  # this is used corresponding to amos transforms
         return sliding_window_inference(x, roi_size, sw_batch_size, self.forward)
 
     def save(self, checkpoint_dir):
@@ -84,19 +87,33 @@ class SegmentationTrainer:
         self.metric = metric
         self.eval_step = eval_step
         self.checkpoint_dir = Path(checkpoint_dir) / datetime.now().strftime("%Y%m%d-%H%M%S")
-
         self.postprocess = {
             "x": AsDiscrete(argmax=True, to_onehot=AMOSDataset.num_classes),
             "y": AsDiscrete(to_onehot=AMOSDataset.num_classes),
         }
+
+    # auxilary function to show training info before training procedure starts
+    def show_training_info(self, module, train_dataloader, val_dataloader):
+        print("--------")
+        print("Device:", device)  # device is a global variable (not an argument of cli)
+        print("# of Training Samples:", len(train_dataloader))
+        print("# of Validation Samples:", len(val_dataloader))
+        print("Max iteration:", self.max_iter, f"steps (validates per {self.eval_step} steps)")
+        print("Checkpoint directory:", self.checkpoint_dir)
+        print("Module Encoder:", module.feat_extractor.__class__.__name__)
+        print("       Decoder:", module.predictor.__class__.__name__)
+        print("Optimizer:", module.optimizer.__class__.__name__, f"(lr = {module.lr})")
+        print("Loss function:", repr(module.criterion))
+        print("Evaluation metric:", self.metric.__class__.__name__)
+        print("--------")
 
     def validation(self, module, dataloader, global_step=None):
         module.eval()
         val_metrics = []
         val_pbar = tqdm(dataloader, dynamic_ncols=True)
         metric_name = self.metric.__class__.__name__
-        train_val_desc = "Validate ({} Steps) ({}={:2.5f})"
-        simple_val_desc = "Validate ({}={:2.5f})"
+        train_val_desc = "Validate ({} Steps) ({}={:2.5f})"  # progress bar description used during training
+        simple_val_desc = "Validate ({}={:2.5f})"  # progress bar description used when the network is tested
         with torch.no_grad():
             for batch in val_pbar:
                 # Infer, decollate data into list of samples, and proprocess both predictions and labels
@@ -123,7 +140,7 @@ class SegmentationTrainer:
         best_metric = 0
         train_pbar = tqdm(range(self.max_iter), dynamic_ncols=True)
         writer = SummaryWriter(log_dir=self.checkpoint_dir)
-
+        writer.add_scalar(f"train/{self.metric.__class__.__name__}", 0, 0)  # validation metric starts from zero
         for step in train_pbar:
             module.train()
             batch = next(iter(train_dataloader))
@@ -141,21 +158,23 @@ class SegmentationTrainer:
                     tqdm.write(f"Model saved! Validation: (New) {val_metric:2.7f} > (Old) {best_metric:2.7f}")
                     best_metric = val_metric
                 else:
-                    tqdm.write(f"\nNo improvement. Validation: (New) {val_metric:2.7f} <= (Old) {best_metric:2.7f}")
+                    tqdm.write(f"No improvement. Validation: (New) {val_metric:2.7f} <= (Old) {best_metric:2.7f}")
 
-    def show_training_info(self, module, train_dataloader, val_dataloader):
-        print("--------")
-        print("Device:", device)  # device is a global variable (not an argument from cli)
-        print("# of Training Samples:", len(train_dataloader))
-        print("# of Validation Samples:", len(val_dataloader))
-        print("Max iteration:", self.max_iter, f"steps (validates per {self.eval_step} steps)")
-        print("Checkpoint directory:", self.checkpoint_dir)
-        print("Module Encoder:", module.feat_extractor.__class__.__name__)
-        print("       Decoder:", module.predictor.__class__.__name__)
-        print("Optimizer:", module.optimizer.__class__.__name__, f"(lr = {module.lr})")
-        print("Loss function:", repr(module.criterion))
-        print("Evaluation metric:", self.metric.__class__.__name__)
-        print("--------")
+
+def split_train_data(modality: str, dataset_configs: dict):
+    _configs = dataset_configs.copy()
+    _configs["modality"] = modality
+    ## Training set and validation set are generated by spliting the original training set.
+    ## Testing set is the validation set from the original data.
+    ## ** note: We test the network without masking any annotation of the given organs.
+    ##          Thus mask_mapping is assigned None.
+    train_dataset = AMOSDataset(stage="train", transform=amos_train_transforms, mask_mapping=bg_mapping, **_configs)
+    val_dataset = AMOSDataset(stage="train", transform=amos_val_transforms, mask_mapping=bg_mapping, **_configs)
+    test_dataset = AMOSDataset(stage="validation", transform=amos_val_transforms, mask_mapping=None, **_configs)
+    # 10% of the original training data is used as validation set.
+    train_dataset = train_dataset[: -int(len(train_dataset) * 0.1)]
+    val_dataset = val_dataset[-int(len(val_dataset) * 0.1) :]
+    return train_dataset, val_dataset, test_dataset
 
 
 # CLI tool
@@ -167,7 +186,6 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=str, default="checkpoints", help="Output folder for the best model")
     parser.add_argument("--modality", type=str, default="ct", help="Modality type: ct / mr / ct+mr")
     parser.add_argument("--masked", action="store_true", help="If true, train with annotation-masked data")
-
     # Input model & training hyperparameters
     parser.add_argument("--mode", type=str, default="train", help="Mode: train / test")
     parser.add_argument(
@@ -182,7 +200,6 @@ if __name__ == "__main__":
         help="Training data: 'all' (training sample) / 'split' (into training and val sets)",
     )
     parser.add_argument("--batch_size", type=int, default="1", help="Batch size for subject input")
-    # parser.add_argument("--crop_sample", type=int, default="2", help="Number of cropped sub-volumes for each subject")
     parser.add_argument("--loss", type=str, default="dice2", help="Loss: dice2 (=DiceCE) / tal")
     parser.add_argument("--lr", type=float, default=0.0001, help="Learning rate for training")
     parser.add_argument("--optim", type=str, default="AdamW", help="Optimizer types: Adam / AdamW")
@@ -190,8 +207,7 @@ if __name__ == "__main__":
     parser.add_argument("--eval_step", type=int, default=500, help="Per steps to perform validation")
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--dev", action="store_true", help="Develop mode. Set max_iter = 5, eval_step = 5.")
-
-    ## Efficiency hyperparameters
+    # Efficiency hyperparameters
     parser.add_argument("--cache_rate", type=float, default=0.1, help="Cache rate to cache your dataset into GPUs")
     parser.add_argument("--num_workers", type=int, default=2, help="Number of workers")
 
@@ -200,11 +216,12 @@ if __name__ == "__main__":
     # Whether train without randomness
     if args.deterministic:
         set_determinism(seed=0)
-        print("* Deterministic = True")
+        print("** Deterministic = True")
     # Whether train with annotation-masked dataset
     if args.masked:
         # bg_mapping: mask_mapping used to mask some class
         # fg_list: list of foreground to initialize target-adaptive loss
+        print("** Annotation masked = True")
         if args.modality == "ct":
             bg_mapping = {i: 0 for i in range(1, AMOSDataset.num_classes) if i % 2 == 0}
             fg_list = [i for i in range(1, AMOSDataset.num_classes) if i % 2 == 1]
@@ -220,59 +237,27 @@ if __name__ == "__main__":
 
     # Datasets
     print("** Training set =", args.train_data)
+    dataset_configs = {
+        "root_dir": args.root,
+        "modality": args.modality,
+        "cache_rate": args.cache_rate,
+        "num_workers": args.num_workers,
+        "dev": args.dev,
+    }
     if args.train_data == "all":
-        train_dataset = AMOSDataset(
-            root_dir=args.root,
-            modality=args.modality,
-            stage="train",
-            cache_rate=args.cache_rate,
-            num_workers=args.num_workers,
-            dev=args.dev,
-            mask_mapping=bg_mapping,
-        )
-        val_dataset = AMOSDataset(
-            root_dir=args.root,
-            modality=args.modality,
-            stage="validation",
-            cache_rate=args.cache_rate,
-            num_workers=args.num_workers,
-            dev=args.dev,
-            mask_mapping=bg_mapping,
-        )
+        train_dataset = AMOSDataset(stage="train", mask_mapping=bg_mapping, **dataset_configs)
+        val_dataset = AMOSDataset(stage="validation", mask_mapping=bg_mapping, **dataset_configs)
         test_dataset = None
-    elif args.train_data == "split":  # Note: there is no shuffling, so don't set modality to "ct+mr"
-        train_dataset = AMOSDataset(
-            root_dir=args.root,
-            modality=args.modality,
-            stage="train",
-            transform=amos_train_transforms,
-            cache_rate=args.cache_rate,
-            num_workers=args.num_workers,
-            dev=args.dev,
-            mask_mapping=bg_mapping,
-        )
-        val_dataset = AMOSDataset(
-            root_dir=args.root,
-            modality=args.modality,
-            stage="train",
-            transform=amos_val_transforms,
-            cache_rate=args.cache_rate,
-            num_workers=args.num_workers,
-            dev=args.dev,
-            mask_mapping=bg_mapping,
-        )
-        test_dataset = AMOSDataset(
-            root_dir=args.root,
-            modality=args.modality,
-            stage="validation",
-            transform=amos_val_transforms,
-            cache_rate=args.cache_rate,
-            num_workers=args.num_workers,
-            dev=args.dev,
-            mask_mapping=None,  # Use an unmasked dataset as testing set
-        )
-        train_dataset = train_dataset[: -int(len(train_dataset) * 0.1)]
-        val_dataset = val_dataset[-int(len(val_dataset) * 0.1) :]
+    elif args.train_data == "split":
+        if args.modality in ["ct", "mr"]:
+            train_dataset, val_dataset, test_dataset = split_train_data(args.modality, dataset_configs)
+        else:
+            # "ct+mr" in this case
+            ct_train_dataset, ct_val_dataset, ct_test_dataset = split_train_data("ct", dataset_configs)
+            mr_train_dataset, mr_val_dataset, mr_test_dataset = split_train_data("mr", dataset_configs)
+            train_dataset = ConcatDataset([ct_train_dataset, mr_train_dataset])
+            val_dataset = ConcatDataset([ct_val_dataset, mr_val_dataset])
+            test_dataset = ConcatDataset([ct_test_dataset, mr_test_dataset])
     else:
         raise ValueError("Got an invalid input of option --train_data.")
 
