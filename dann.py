@@ -5,7 +5,8 @@ from typing import Optional
 
 import numpy as np
 import torch
-from monai.data import CacheDataset, DataLoader, decollate_batch
+from medaset.amos import AMOSDataset, amos_train_transforms, amos_val_transforms
+from monai.data import DataLoader, decollate_batch
 from monai.inferers import sliding_window_inference
 from monai.losses import DiceCELoss
 from monai.metrics import DiceMetric
@@ -14,14 +15,12 @@ from monai.utils import set_determinism
 from torch import nn, ones, zeros
 from torch.nn import BCEWithLogitsLoss
 from torch.optim import SGD, Adam, AdamW
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from dataset import AMOSDataset
 from lib.loss.target_adaptive_loss import TargetAdaptiveLoss
 from networks.uxnet3d.network_backbone import UXNETDecoder, UXNETEncoder
 from transforms import AddBackgroundClass
-
-device = torch.device("cuda")
 
 
 class GradientReversalLayer(torch.autograd.Function):
@@ -59,18 +58,18 @@ class DANNModule(nn.Module):
         h, w, d = 96, 96, 96  # feature size
         self.num_class = 16  # number of AMOS classes
         self.ct_foreground = ct_foreground
-        self.ct_background = list(set(range(1, self.num_class)) - set(ct_foreground))
+        self.ct_background = list(set(range(1, self.num_class)) - set(ct_foreground)) if ct_foreground else None
         self.mr_foreground = mr_foreground
-        self.mr_background = list(set(range(1, self.num_class)) - set(mr_foreground))
+        self.mr_background = list(set(range(1, self.num_class)) - set(mr_foreground)) if mr_foreground else None
 
         self.feat_extractor = UXNETEncoder(in_chans=1)
         self.predictor = UXNETDecoder(out_chans=16)
         self.grl = GradientReversalLayer()
         self.dom_classifier = nn.Sequential(
             nn.Flatten(),
-            nn.Linear((h // 16) * (w // 16) * (d // 16) * 768, 1024),
-            nn.Linear(1024, 1024),
-            nn.Linear(1024, 1),
+            nn.Linear((h // 16) * (w // 16) * (d // 16) * 768, 512),
+            # nn.Linear(1024, 1024),
+            nn.Linear(512, 1),
         )
 
         # Optimizer
@@ -143,24 +142,53 @@ class DANNModule(nn.Module):
         torch.save(self.dom_classifier.state_dict, os.path.join(checkpoint_dir, "dom_classifier_state.pth"))
 
 
+def postprocess(num_classes, background=None, label=None):
+    if label == "masked":
+        return {
+            "x": Compose(AsDiscrete(argmax=True, to_onehot=num_classes), AddBackgroundClass(background)),
+            "y": Compose(AsDiscrete(to_onehot=num_classes), AddBackgroundClass(background)),
+        }
+    else:
+        return {
+            "x": Compose(AsDiscrete(argmax=True, to_onehot=num_classes)),
+            "y": Compose(AsDiscrete(to_onehot=num_classes)),
+        }
+
+
 class DANNTrainer:
     def __init__(
         self,
         max_iter=40000,
         metric=DiceMetric(include_background=True, reduction="mean", get_not_nans=False),
         eval_step=500,
-        checkpoint_dir="./default_ckpt/",
+        checkpoint_dir="./checkpoints/",
+        device="cuda",
     ):
         self.max_iter = max_iter
         self.metric = metric
         self.eval_step = eval_step
         self.checkpoint_dir = checkpoint_dir
         Path(self.checkpoint_dir).mkdir(parents=True, exist_ok=True)
+        self.device = device
 
-    def validation(self, module, ct_dtl, mr_dtl, global_step=None):
+    def show_training_info(self, module, ct_train_dtl, ct_val_dtl, mr_train_dtl, mr_val_dtl):
+        print("--------")
+        print("Device:", self.device)  # device is a global variable (not an argument of cli)
+        print("# of Training Samples:", {"ct": len(ct_train_dtl), "mr": len(mr_train_dtl)})
+        print("# of Validation Samples:", {"ct": len(ct_val_dtl), "mr": len(mr_val_dtl)})
+        print("Max iteration:", self.max_iter, f"steps (validates per {self.eval_step} steps)")
+        print("Checkpoint directory:", self.checkpoint_dir)
+        print("Module Encoder:", module.feat_extractor.__class__.__name__)
+        print("       Decoder:", module.predictor.__class__.__name__)
+        print("Optimizer:", module.optimizer.__class__.__name__, f"(lr = {module.lr})")
+        print("Loss function:", {"ct": module.ct_tal.__class__.__name__, "mr": module.mr_tal.__class__.__name__})
+        print("Evaluation metric:", self.metric.__class__.__name__)
+        print("--------")
+
+    def validation(self, module, ct_dtl, mr_dtl, label="masked", global_step=None):
         module.eval()
         val_metrics = []
-        num_class = module.num_class
+        num_classes = module.num_class
         ct_background = module.ct_background
         mr_background = module.mr_background
         val_pbar = tqdm(range(len(ct_dtl) + len(mr_dtl)), dynamic_ncols=True)
@@ -170,23 +198,18 @@ class DANNTrainer:
         with torch.no_grad():
             for i in val_pbar:
                 # Set dataloader and post-processing
-                if i % 2 == 0:
+                if i % 2 == 0:  # ct
                     batch = next(iter(ct_dtl))
-                    postprocess = {
-                        "x": Compose(AsDiscrete(argmax=True, to_onehot=num_class), AddBackgroundClass(ct_background)),
-                        "y": Compose(AsDiscrete(to_onehot=num_class), AddBackgroundClass(ct_background)),
-                    }
-                else:
+                    post = postprocess(num_classes, ct_background, label)
+                else:  # mr
                     batch = next(iter(mr_dtl))
-                    postprocess = {
-                        "x": Compose(AsDiscrete(argmax=True, to_onehot=num_class), AddBackgroundClass(mr_background)),
-                        "y": Compose(AsDiscrete(to_onehot=num_class), AddBackgroundClass(mr_background)),
-                    }
+                    post = postprocess(num_classes, mr_background, label)
+
                 # Infer, decollate data into list of samples, and proprocess both predictions and labels
-                images, masks = batch["image"].to(device), batch["label"].to(device)
+                images, masks = batch["image"].to(self.device), batch["label"].to(self.device)
                 samples = decollate_batch({"prediction": module.inference(images), "ground_truth": masks})
-                outputs = [postprocess["x"](sample["prediction"]) for sample in samples]
-                masks = [postprocess["y"](sample["ground_truth"]) for sample in samples]
+                outputs = [post["x"](sample["prediction"]) for sample in samples]
+                masks = [post["y"](sample["ground_truth"]) for sample in samples]
                 # Compute validation metrics
                 self.metric(y_pred=outputs, y=masks)
                 batch_metric = self.metric.aggregate().item()
@@ -204,85 +227,27 @@ class DANNTrainer:
         self.show_training_info(module, ct_train_dtl, ct_val_dtl, mr_train_dtl, mr_val_dtl)
         best_metric = 0
         train_pbar = tqdm(range(self.max_iter), dynamic_ncols=True)
+        writer = SummaryWriter(log_dir=self.checkpoint_dir)
+        writer.add_scalar(f"train/{self.metric.__class__.__name__}", 0, 0)  # validation metric starts from zero
 
         for step in train_pbar:
             module.train()
             ct_batch = next(iter(ct_train_dtl))
             mr_batch = next(iter(mr_train_dtl))
-            ct_image, ct_mask = ct_batch["image"].to(device), ct_batch["label"].to(device)
-            mr_image, mr_mask = mr_batch["image"].to(device), mr_batch["label"].to(device)
+            ct_image, ct_mask = ct_batch["image"].to(self.device), ct_batch["label"].to(self.device)
+            mr_image, mr_mask = mr_batch["image"].to(self.device), mr_batch["label"].to(self.device)
             seg_loss, adv_loss = module.update(ct_image, ct_mask, mr_image, mr_mask)
+            writer.add_scalar(f"train/seg_loss", seg_loss, step)
+            writer.add_scalar(f"train/adv_loss", adv_loss, step)
             train_pbar.set_description(
                 f"Training ({step} / {self.max_iter} Steps) (seg_loss={seg_loss:2.5f}, adv_loss={adv_loss:2.5f})"
             )
             if ((step + 1) % self.eval_step == 0) or (step == self.max_iter - 1):
                 val_metric = self.validation(module, ct_val_dtl, mr_val_dtl, global_step=step)
+                writer.add_scalar(f"train/{self.metric.__class__.__name__}", val_metric, step)
                 if val_metric > best_metric:
                     module.save(self.checkpoint_dir)
                     print(f"Model saved! Validation: (New) {val_metric:2.7f} > (Old) {best_metric:2.7f}")
                     best_metric = val_metric
                 else:
                     print(f"No improvement. Validation: (New) {val_metric:2.7f} <= (Old) {best_metric:2.7f}")
-
-    def show_training_info(self, module, ct_train_dtl, ct_val_dtl, mr_train_dtl, mr_val_dtl):
-        print("--------")
-        print("# of Training Samples:", {"ct": len(ct_train_dtl), "mr": len(mr_train_dtl)})
-        print("# of Validation Samples:", {"ct": len(ct_val_dtl), "mr": len(mr_val_dtl)})
-        print("Max iteration:", self.max_iter, f"steps (validates per {self.eval_step} steps)")
-        print("Checkpoint directory:", self.checkpoint_dir)
-        print("Module Encoder:", module.feat_extractor.__class__.__name__)
-        print("       Decoder:", module.predictor.__class__.__name__)
-        print("Optimizer:", module.optimizer.__class__.__name__, f"(lr = {module.lr})")
-        print("Loss function:", {"ct": module.ct_tal.__class__.__name__, "mr": module.mr_tal.__class__.__name__})
-        print("Evaluation metric:", self.metric.__class__.__name__)
-        print("--------")
-
-
-# CLI tool
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Segementation branch of DANN, using AMOS dataset.")
-    ## Input data hyperparameters
-    parser.add_argument("--root", type=str, default="", required=True, help="Root folder of all your images and labels")
-    parser.add_argument("--output", type=str, default="", required=True, help="Output folder for the best model")
-    parser.add_argument("--ct-fg", type=int, nargs="+", required=True, help="Annotated organ on CT modality")
-    parser.add_argument("--mr-fg", type=int, nargs="+", required=True, help="Annotated organ on MR modality")
-
-    ## Input model & training hyperparameters
-    # parser.add_argument("--mode", type=str, default="train", help="Training or testing mode")
-    parser.add_argument("--batch_size", type=int, default="1", help="Batch size for subject input")
-    # parser.add_argument("--crop_sample", type=int, default="2", help="Number of cropped sub-volumes for each subject")
-    parser.add_argument("--lr", type=float, default=0.0001, help="Learning rate for training")
-    parser.add_argument("--optim", type=str, default="AdamW", help="Optimizer types: Adam / AdamW")
-    parser.add_argument("--max_iter", type=int, default=40000, help="Maximum iteration steps for training")
-    parser.add_argument("--eval_step", type=int, default=500, help="Per steps to perform validation")
-    parser.add_argument("--deterministic", action="store_true")
-    parser.add_argument("--dev", action="store_true")
-
-    ## Efficiency hyperparameters
-    # parser.add_argument("--gpu", type=str, default="0", help="your GPU number")
-    parser.add_argument("--cache_rate", type=float, default=0.1, help="Cache rate to cache your dataset into GPUs")
-    parser.add_argument("--num_workers", type=int, default=2, help="Number of workers")
-
-    args = parser.parse_args()
-
-    if args.deterministic:
-        set_determinism(seed=0)
-        print("[deterministic mode]")
-
-    ct_train_ds = AMOSDataset(args.root, "ct", "train", 3, None, args.dev, args.cache_rate, args.num_workers)
-    ct_train_dtl = DataLoader(ct_train_ds, batch_size=args.batch_size, shuffle=True, pin_memory=True)
-    ct_val_ds = AMOSDataset(args.root, "ct", "validation", 3, None, args.dev, args.cache_rate, args.num_workers)
-    ct_val_dtl = DataLoader(ct_val_ds, batch_size=args.batch_size, shuffle=True, pin_memory=True)
-
-    mr_train_ds = AMOSDataset(args.root, "mr", "train", 3, None, args.dev, args.cache_rate, args.num_workers)
-    mr_train_dtl = DataLoader(mr_train_ds, batch_size=args.batch_size, shuffle=True, pin_memory=True)
-    mr_val_ds = AMOSDataset(args.root, "mr", "validation", 3, None, args.dev, args.cache_rate, args.num_workers)
-    mr_val_dtl = DataLoader(mr_val_ds, batch_size=args.batch_size, shuffle=True, pin_memory=True)
-
-    module = DANNModule(
-        ct_foreground=[i for i in range(1, 16) if i % 2 == 0], mr_foreground=[i for i in range(1, 16) if i % 2 == 1]
-    )
-    module.to(device)
-    trainer = DANNTrainer(max_iter=args.max_iter, eval_step=args.eval_step)
-    trainer.train(module, ct_train_dtl, ct_val_dtl, mr_train_dtl, mr_val_dtl)
