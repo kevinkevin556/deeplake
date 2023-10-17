@@ -250,7 +250,7 @@ class DANNTrainer:
             ## We gradually increase the value of lambda of grl as the training proceeds.
             #    p = float(batch_idx + epoch_idx * len_dataloader) / (n_epoch * len_dataloader)
             #    grl_lambda = 2. / (1. + np.exp(-10 * p)) - 1
-            p = float(step) / self.maxt_iter
+            p = float(step) / self.max_iter
             grl_lambda = 2.0 / (1.0 + np.exp(-10 * p)) - 1
             seg_loss, adv_loss = module.update(ct_image, ct_mask, mr_image, mr_mask, alpha=grl_lambda)
             writer.add_scalar(f"train/seg_loss", seg_loss, step)
