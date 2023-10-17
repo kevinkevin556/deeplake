@@ -208,7 +208,7 @@ def main():
 
         module = SegmentationModule(optimizer=args.optim, lr=args.lr, criterion=criterion)
     else:
-        if args.loss != "tal":
+        if args.loss != "tal" and not args.masked:
             module = DANNModule(None, None, args.optim, args.lr)
         else:
             module = DANNModule(fg["ct"], fg["mr"], args.optim, args.lr)
