@@ -24,6 +24,12 @@ from transforms import AddBackgroundClass
 
 
 class GradientReversalLayer(torch.autograd.Function):
+    def __init__(ctx, alpha):
+        ctx.set_alpha(alpha)
+
+    def set_alpha(ctx, alpha):
+        ctx.alpha = alpha
+
     @staticmethod
     def forward(ctx, input):
         return input
@@ -50,7 +56,11 @@ class AdversarialLoss(nn.Module):
 
 class DANNModule(nn.Module):
     def __init__(
-        self, ct_foreground: Optional[list] = None, mr_foreground: Optional[list] = None, optimizer="AdamW", lr=0.0001
+        self,
+        ct_foreground: Optional[list] = None,
+        mr_foreground: Optional[list] = None,
+        optimizer: str = "AdamW",
+        lr: float = 0.0001,
     ):
         super().__init__()
 
@@ -64,7 +74,7 @@ class DANNModule(nn.Module):
 
         self.feat_extractor = UXNETEncoder(in_chans=1)
         self.predictor = UXNETDecoder(out_chans=16)
-        self.grl = GradientReversalLayer()
+        self.grl = GradientReversalLayer(alpha=1)
         self.dom_classifier = nn.Sequential(
             nn.Flatten(),
             nn.Linear((h // 16) * (w // 16) * (d // 16) * 768, 512),
@@ -89,12 +99,12 @@ class DANNModule(nn.Module):
         # Losses
         self.ct_tal = (
             TargetAdaptiveLoss(num_class=self.num_class, foreground=ct_foreground)
-            if ct_foreground
+            if self.ct_background is not None
             else DiceCELoss(to_onehot_y=True, softmax=True)
         )
         self.mr_tal = (
             TargetAdaptiveLoss(num_class=self.num_class, foreground=mr_foreground)
-            if mr_foreground
+            if self.mr_background is not None
             else DiceCELoss(to_onehot_y=True, softmax=True)
         )
         self.adv_loss = AdversarialLoss()
@@ -108,7 +118,8 @@ class DANNModule(nn.Module):
             dom_pred_logits = self.dom_classifier(self.grl.apply(feature))
             return dom_pred_logits
 
-    def update(self, ct_image, ct_mask, mr_image, mr_mask):
+    def update(self, ct_image, ct_mask, mr_image, mr_mask, alpha=1):
+        self.grl.set_alpha(alpha)
         self.optimizer.zero_grad()
 
         # Predictor branch
@@ -236,7 +247,12 @@ class DANNTrainer:
             mr_batch = next(iter(mr_train_dtl))
             ct_image, ct_mask = ct_batch["image"].to(self.device), ct_batch["label"].to(self.device)
             mr_image, mr_mask = mr_batch["image"].to(self.device), mr_batch["label"].to(self.device)
-            seg_loss, adv_loss = module.update(ct_image, ct_mask, mr_image, mr_mask)
+            ## We gradually increase the value of lambda of grl as the training proceeds.
+            #    p = float(batch_idx + epoch_idx * len_dataloader) / (n_epoch * len_dataloader)
+            #    grl_lambda = 2. / (1. + np.exp(-10 * p)) - 1
+            p = float(step) / self.maxt_iter
+            grl_lambda = 2.0 / (1.0 + np.exp(-10 * p)) - 1
+            seg_loss, adv_loss = module.update(ct_image, ct_mask, mr_image, mr_mask, alpha=grl_lambda)
             writer.add_scalar(f"train/seg_loss", seg_loss, step)
             writer.add_scalar(f"train/adv_loss", adv_loss, step)
             train_pbar.set_description(
