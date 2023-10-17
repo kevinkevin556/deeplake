@@ -152,6 +152,14 @@ class DANNModule(nn.Module):
         torch.save(self.predictor.state_dict, os.path.join(checkpoint_dir, "predictor_state.pth"))
         torch.save(self.dom_classifier.state_dict, os.path.join(checkpoint_dir, "dom_classifier_state.pth"))
 
+    def load(self, checkpoint_dir):
+        try:
+            self.feat_extractor.load_state_dict(torch.load(os.path.join(checkpoint_dir, "feat_extractor_state.pth")))
+            self.predictor.load_state_dict(torch.load(os.path.join(checkpoint_dir, "predictor_state.pth")))
+            self.dom_classifier.load_state_dict(torch.load(os.path.join(checkpoint_dir, "dom_classifier_state.pth")))
+        except Exception as e:
+            print(e)
+
 
 def postprocess(num_classes, background=None, label=None):
     if label == "masked":
