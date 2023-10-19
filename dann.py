@@ -5,13 +5,11 @@ from typing import Optional
 
 import numpy as np
 import torch
-from medaset.amos import AMOSDataset, amos_train_transforms, amos_val_transforms
-from monai.data import DataLoader, decollate_batch
+from monai.data import decollate_batch
 from monai.inferers import sliding_window_inference
 from monai.losses import DiceCELoss
 from monai.metrics import DiceMetric
 from monai.transforms import AsDiscrete, Compose
-from monai.utils import set_determinism
 from torch import nn, ones, zeros
 from torch.nn import BCEWithLogitsLoss
 from torch.optim import SGD, Adam, AdamW
@@ -61,19 +59,20 @@ class DANNModule(nn.Module):
         mr_foreground: Optional[list] = None,
         optimizer: str = "AdamW",
         lr: float = 0.0001,
+        num_classes: int = 16,
     ):
         super().__init__()
 
         # Network components
         h, w, d = 96, 96, 96  # feature size
-        self.num_class = 16  # number of AMOS classes
+        self.num_classes = num_classes  # number of AMOS classes
         self.ct_foreground = ct_foreground
-        self.ct_background = list(set(range(1, self.num_class)) - set(ct_foreground)) if ct_foreground else None
+        self.ct_background = list(set(range(1, self.num_classes)) - set(ct_foreground)) if ct_foreground else None
         self.mr_foreground = mr_foreground
-        self.mr_background = list(set(range(1, self.num_class)) - set(mr_foreground)) if mr_foreground else None
+        self.mr_background = list(set(range(1, self.num_classes)) - set(mr_foreground)) if mr_foreground else None
 
         self.feat_extractor = UXNETEncoder(in_chans=1)
-        self.predictor = UXNETDecoder(out_chans=16)
+        self.predictor = UXNETDecoder(out_chans=self.num_classes)
         self.grl = GradientReversalLayer(alpha=1)
         self.dom_classifier = nn.Sequential(
             nn.Flatten(),
@@ -148,9 +147,9 @@ class DANNModule(nn.Module):
         return sliding_window_inference(x, roi_size, sw_batch_size, self.forward)
 
     def save(self, checkpoint_dir):
-        torch.save(self.feat_extractor.state_dict, os.path.join(checkpoint_dir, "feat_extractor_state.pth"))
-        torch.save(self.predictor.state_dict, os.path.join(checkpoint_dir, "predictor_state.pth"))
-        torch.save(self.dom_classifier.state_dict, os.path.join(checkpoint_dir, "dom_classifier_state.pth"))
+        torch.save(self.feat_extractor.state_dict(), os.path.join(checkpoint_dir, "feat_extractor_state.pth"))
+        torch.save(self.predictor.state_dict(), os.path.join(checkpoint_dir, "predictor_state.pth"))
+        torch.save(self.dom_classifier.state_dict(), os.path.join(checkpoint_dir, "dom_classifier_state.pth"))
 
     def load(self, checkpoint_dir):
         try:
@@ -158,7 +157,7 @@ class DANNModule(nn.Module):
             self.predictor.load_state_dict(torch.load(os.path.join(checkpoint_dir, "predictor_state.pth")))
             self.dom_classifier.load_state_dict(torch.load(os.path.join(checkpoint_dir, "dom_classifier_state.pth")))
         except Exception as e:
-            print(e)
+            raise e
 
 
 def postprocess(num_classes, background=None, label=None):
