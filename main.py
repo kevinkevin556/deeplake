@@ -27,6 +27,16 @@ fg = {
     "mr": [i for i in range(1, AMOSDataset.num_classes) if i % 2 == 0],
 }
 
+module_dict = {
+    "segmentation": SegmentationModule,
+    "dann": DANNModule,
+}
+
+trainer_dict = {
+    "segmentation": SegmentationTrainer,
+    "dann": DANNTrainer,
+}
+
 
 def split_train_data(modality: str, bg_mapping: dict, data_config: dict):
     _configs = data_config.copy()
@@ -156,14 +166,14 @@ def get_datasets(args):
     else:
         raise ValueError("Got an invalid input of option --train_data.")
 
-    if args.module == "dann":
+    if args.module == "segementation":
+        return train_dataset, val_dataset, test_dataset
+    else:
         return (
             (ct_train_dataset, mr_train_dataset),
             (ct_val_dataset, mr_val_dataset),
             (ct_test_dataset, mr_test_dataset),
         )
-    else:
-        return train_dataset, val_dataset, test_dataset
 
 
 def main():
@@ -177,16 +187,20 @@ def main():
 
     ## Dataloaders
     train_dataset, val_dataset, test_dataset = get_datasets(args)
-    if args.module != "dann":
+    if args.module == "segmentation":
         train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=~args.dev, pin_memory=True)
         val_dataloader = DataLoader(val_dataset, batch_size=1, shuffle=~args.dev, pin_memory=True)
         test_dataloader = (
             DataLoader(test_dataset, batch_size=1, shuffle=False, pin_memory=True) if test_dataset else None
         )
     else:
-        ct_train_dataloader = DataLoader(train_dataset[0], batch_size=args.batch_size, shuffle=True, pin_memory=True)
-        ct_val_dataloader = DataLoader(val_dataset[0], batch_size=args.batch_size, shuffle=False, pin_memory=True)
-        mr_train_dataloader = DataLoader(train_dataset[1], batch_size=1, shuffle=True, pin_memory=True)
+        ct_train_dataloader = DataLoader(
+            train_dataset[0], batch_size=args.batch_size, shuffle=~args.dev, pin_memory=True
+        )
+        ct_val_dataloader = DataLoader(val_dataset[0], batch_size=1, shuffle=False, pin_memory=True)
+        mr_train_dataloader = DataLoader(
+            train_dataset[1], batch_size=args.batch_size, shuffle=~args.dev, pin_memory=True
+        )
         mr_val_dataloader = DataLoader(val_dataset[1], batch_size=1, shuffle=False, pin_memory=True)
         ct_test_dataloader = (
             DataLoader(test_dataset[0], batch_size=1, shuffle=False, pin_memory=True) if test_dataset else None
@@ -198,7 +212,7 @@ def main():
     # breakpoint()
 
     ## Initialize module
-    if args.module != "dann":
+    if args.module == "segmentation":
         if args.loss != "tal":
             criterion = DiceCELoss(include_background=True, to_onehot_y=True, softmax=True)
         elif args.modality in ["ct", "mr"]:
@@ -207,11 +221,14 @@ def main():
             raise NotImplementedError("Target adaptive loss does not support ct+mr currently.")
 
         module = SegmentationModule(optimizer=args.optim, lr=args.lr, criterion=criterion)
-    else:
+    elif args.module == "dann":
         if args.loss != "tal" and not args.masked:
-            module = DANNModule(None, None, args.optim, args.lr)
+            module = DANNModule(None, None, args.optim, args.lr, AMOSDataset.num_classes)
         else:
-            module = DANNModule(fg["ct"], fg["mr"], args.optim, args.lr)
+            module = DANNModule(fg["ct"], fg["mr"], args.optim, args.lr, AMOSDataset.num_classes)
+    else:
+        module = module_dict[args.module]()
+
     ## Load module if pretrained checkpoint is provided
     if args.pretrained:
         print("** Pretrained checkpoint =", args.pretrained)
@@ -225,21 +242,12 @@ def main():
     checkpoint_dir = args.output if not args.dev else "debug"
     # create subfolder based on time
     checkpoint_dir = Path(checkpoint_dir) / datetime.now().strftime("%Y%m%d-%H%M%S")
-
-    if args.module != "dann":
-        trainer = SegmentationTrainer(
-            max_iter=args.max_iter,
-            eval_step=args.eval_step,
-            checkpoint_dir=checkpoint_dir,
-            device=device,
-        )
-    else:
-        trainer = DANNTrainer(
-            max_iter=args.max_iter,
-            eval_step=args.eval_step,
-            checkpoint_dir=checkpoint_dir,
-            device=device,
-        )
+    trainer = trainer_dict[args.module](
+        max_iter=args.max_iter,
+        eval_step=args.eval_step,
+        checkpoint_dir=checkpoint_dir,
+        device=device,
+    )
 
     # breakpoint()
 
@@ -250,7 +258,7 @@ def main():
         with open(Path(trainer.checkpoint_dir) / "args.json", "w") as f:
             json.dump(vars(args), f, indent=4)
         # Train
-        if args.module != "dann":
+        if args.module == "segmentation":
             trainer.train(module, train_dataloader, val_dataloader)
             if test_dataloader:
                 test_metric = trainer.validation(module, test_dataloader)
@@ -262,7 +270,7 @@ def main():
                 print("** Test (Final):", test_metric)
     elif args.mode == "test":
         if test_dataloader or (ct_test_dataloader and mr_test_dataloader):
-            if args.module != "dann":
+            if args.module == "segmentation":
                 test_metric = trainer.validation(module, test_dataloader)
             else:
                 test_metric = trainer.validation(module, ct_test_dataloader, mr_test_dataloader, label="all")
