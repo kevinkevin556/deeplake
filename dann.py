@@ -97,12 +97,12 @@ class DANNModule(nn.Module):
 
         # Losses
         self.ct_tal = (
-            TargetAdaptiveLoss(num_class=self.num_class, foreground=ct_foreground)
+            TargetAdaptiveLoss(num_classes=self.num_classes, foreground=ct_foreground)
             if self.ct_background is not None
             else DiceCELoss(to_onehot_y=True, softmax=True)
         )
         self.mr_tal = (
-            TargetAdaptiveLoss(num_class=self.num_class, foreground=mr_foreground)
+            TargetAdaptiveLoss(num_classes=self.num_classes, foreground=mr_foreground)
             if self.mr_background is not None
             else DiceCELoss(to_onehot_y=True, softmax=True)
         )
@@ -206,7 +206,7 @@ class DANNTrainer:
     def validation(self, module, ct_dtl, mr_dtl, label="masked", global_step=None):
         module.eval()
         val_metrics = []
-        num_classes = module.num_class
+        num_classes = module.num_classes
         ct_background = module.ct_background
         mr_background = module.mr_background
         val_pbar = tqdm(range(len(ct_dtl) + len(mr_dtl)), dynamic_ncols=True)
