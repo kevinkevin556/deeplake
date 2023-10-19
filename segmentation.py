@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import tqdm
-from medaset.amos import AMOSDataset, amos_train_transforms, amos_val_transforms
+from medaset.amos import AMOSDataset
 from monai.data import DataLoader, decollate_batch
 from monai.inferers import sliding_window_inference
 from monai.losses import DiceCELoss
@@ -15,6 +15,7 @@ from monai.metrics import DiceMetric
 from monai.transforms import AsDiscrete
 from monai.utils import set_determinism
 from torch import nn
+from torch.nn.modules.loss import _Loss
 from torch.optim import SGD, Adam, AdamW
 from torch.utils.data import ConcatDataset
 from torch.utils.tensorboard import SummaryWriter
@@ -27,10 +28,16 @@ crop_sample = 2
 
 
 class SegmentationModule(nn.Module):
-    def __init__(self, criterion=DiceCELoss(to_onehot_y=True, softmax=True), optimizer="AdamW", lr=0.0001):
+    def __init__(
+        self,
+        criterion: _Loss = DiceCELoss(to_onehot_y=True, softmax=True),
+        optimizer: str = "AdamW",
+        lr: float = 0.0001,
+        num_classes: int = 16,
+    ):
         super().__init__()
         self.feat_extractor = UXNETEncoder(in_chans=1)
-        self.predictor = UXNETDecoder(out_chans=16)
+        self.predictor = UXNETDecoder(out_chans=num_classes)
         self.criterion = criterion
 
         params = list(self.feat_extractor.parameters()) + list(self.predictor.parameters())
