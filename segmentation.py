@@ -140,7 +140,7 @@ class SegmentationTrainer:
         module.print_info()
         print("--------")
 
-    def validation(self, module, dataloader, global_step=None):
+    def validation(self, module, dataloader, global_step=None, **kwargs):
         module.eval()
         val_metrics = []
         val_pbar = tqdm(dataloader, dynamic_ncols=True)
@@ -192,3 +192,35 @@ class SegmentationTrainer:
                     best_metric = val_metric
                 else:
                     tqdm.write(f"No improvement. Validation: (New) {val_metric:2.7f} <= (Old) {best_metric:2.7f}")
+
+
+class SegmentationInitializer:
+    @staticmethod
+    def init_dataloaders(train_dataset, val_dataset, test_dataset, batch_size, dev):
+        train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=~dev, pin_memory=True)
+        val_dataloader = DataLoader(val_dataset, batch_size=1, shuffle=False, pin_memory=True)
+        test_dataloader = (
+            DataLoader(test_dataset, batch_size=1, shuffle=False, pin_memory=True) if test_dataset else None
+        )
+        return train_dataloader, val_dataloader, test_dataloader
+
+    @staticmethod
+    def init_module(loss, optim, lr, data_class, modality, masked, fg, device):
+        if loss != "tal":
+            criterion = DiceCELoss(include_background=True, to_onehot_y=True, softmax=True)
+        elif modality in ["ct", "mr"]:
+            criterion = TargetAdaptiveLoss(AMOSDataset.num_classes, fg[modality], device)
+        else:
+            raise NotImplementedError("Target adaptive loss does not support ct+mr currently.")
+        module = SegmentationModule(optimizer=optim, lr=lr, criterion=criterion)
+        return module
+
+    @staticmethod
+    def init_trainer(max_iter, eval_step, checkpoint_dir, device):
+        trainer = SegmentationTrainer(
+            max_iter=max_iter,
+            eval_step=eval_step,
+            checkpoint_dir=checkpoint_dir,
+            device=device,
+        )
+        return trainer

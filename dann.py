@@ -5,7 +5,7 @@ from typing import Optional
 
 import numpy as np
 import torch
-from monai.data import decollate_batch
+from monai.data import DataLoader, decollate_batch
 from monai.inferers import sliding_window_inference
 from monai.losses import DiceCELoss
 from monai.metrics import DiceMetric
@@ -195,7 +195,9 @@ class DANNTrainer:
         Path(self.checkpoint_dir).mkdir(parents=True, exist_ok=True)
         self.device = device
 
-    def show_training_info(self, module, ct_train_dtl, ct_val_dtl, mr_train_dtl, mr_val_dtl):
+    def show_training_info(self, module, train_dataloader, val_dataloader):
+        ct_train_dtl, mr_train_dtl = train_dataloader
+        ct_val_dtl, mr_val_dtl = val_dataloader
         print("--------")
         print("Device:", self.device)  # device is a global variable (not an argument of cli)
         print("# of Training Samples:", {"ct": len(ct_train_dtl), "mr": len(mr_train_dtl)})
@@ -206,8 +208,9 @@ class DANNTrainer:
         module.print_info()
         print("--------")
 
-    def validation(self, module, ct_dtl, mr_dtl, label="masked", global_step=None):
+    def validation(self, module, dataloader, label="masked", global_step=None):
         module.eval()
+        ct_dtl, mr_dtl = dataloader
         val_metrics = []
         num_classes = module.num_classes
         ct_background = module.ct_background
@@ -244,8 +247,9 @@ class DANNTrainer:
         mean_val_metric = np.mean(val_metrics)
         return mean_val_metric
 
-    def train(self, module, ct_train_dtl, ct_val_dtl, mr_train_dtl, mr_val_dtl):
-        self.show_training_info(module, ct_train_dtl, ct_val_dtl, mr_train_dtl, mr_val_dtl)
+    def train(self, module, train_dataloader, val_dataloader):
+        self.show_training_info(module, train_dataloader, val_dataloader)
+        ct_train_dtl, mr_train_dtl = train_dataloader
         best_metric = 0
         train_pbar = tqdm(range(self.max_iter), dynamic_ncols=True)
         writer = SummaryWriter(log_dir=self.checkpoint_dir)
@@ -269,7 +273,7 @@ class DANNTrainer:
                 f"Training ({step} / {self.max_iter} Steps) (seg_loss={seg_loss:2.5f}, adv_loss={adv_loss:2.5f})"
             )
             if ((step + 1) % self.eval_step == 0) or (step == self.max_iter - 1):
-                val_metric = self.validation(module, ct_val_dtl, mr_val_dtl, global_step=step)
+                val_metric = self.validation(module, val_dataloader, global_step=step)
                 writer.add_scalar(f"train/{self.metric.__class__.__name__}", val_metric, step)
                 if val_metric > best_metric:
                     module.save(self.checkpoint_dir)
@@ -277,3 +281,41 @@ class DANNTrainer:
                     best_metric = val_metric
                 else:
                     print(f"No improvement. Validation: (New) {val_metric:2.7f} <= (Old) {best_metric:2.7f}")
+
+
+class DANNInitializer:
+    @staticmethod
+    def init_dataloaders(train_dataset, val_dataset, test_dataset, batch_size, dev):
+        ct_train_dataloader = DataLoader(train_dataset[0], batch_size=batch_size, shuffle=~dev, pin_memory=True)
+        ct_val_dataloader = DataLoader(val_dataset[0], batch_size=1, shuffle=False, pin_memory=True)
+        mr_train_dataloader = DataLoader(train_dataset[1], batch_size=batch_size, shuffle=~dev, pin_memory=True)
+        mr_val_dataloader = DataLoader(val_dataset[1], batch_size=1, shuffle=False, pin_memory=True)
+        ct_test_dataloader = (
+            DataLoader(test_dataset[0], batch_size=1, shuffle=False, pin_memory=True) if test_dataset else None
+        )
+        mr_test_dataloader = (
+            DataLoader(test_dataset[1], batch_size=1, shuffle=False, pin_memory=True) if test_dataset else None
+        )
+        return (
+            (ct_train_dataloader, mr_train_dataloader),
+            (ct_val_dataloader, mr_val_dataloader),
+            (ct_test_dataloader, mr_test_dataloader),
+        )
+
+    @staticmethod
+    def init_module(loss, optim, lr, data_class, modality, masked, fg, device):
+        if loss != "tal" and not masked:
+            module = DANNModule(None, None, optim, lr, data_class.num_classes)
+        else:
+            module = DANNModule(fg["ct"], fg["mr"], optim, lr, data_class.num_classes)
+        return module
+
+    @staticmethod
+    def init_trainer(max_iter, eval_step, checkpoint_dir, device):
+        trainer = DANNTrainer(
+            max_iter=max_iter,
+            eval_step=eval_step,
+            checkpoint_dir=checkpoint_dir,
+            device=device,
+        )
+        return trainer
