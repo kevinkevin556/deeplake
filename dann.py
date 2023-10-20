@@ -159,6 +159,12 @@ class DANNModule(nn.Module):
         except Exception as e:
             raise e
 
+    def print_info(self):
+        print("Module Encoder:", self.feat_extractor.__class__.__name__)
+        print("       Decoder:", self.predictor.__class__.__name__)
+        print("Optimizer:", self.optimizer.__class__.__name__, f"(lr = {self.lr})")
+        print("Loss function:", {"ct": self.ct_tal.__class__.__name__, "mr": self.mr_tal.__class__.__name__})
+
 
 def postprocess(num_classes, background=None, label=None):
     if label == "masked":
@@ -196,11 +202,8 @@ class DANNTrainer:
         print("# of Validation Samples:", {"ct": len(ct_val_dtl), "mr": len(mr_val_dtl)})
         print("Max iteration:", self.max_iter, f"steps (validates per {self.eval_step} steps)")
         print("Checkpoint directory:", self.checkpoint_dir)
-        print("Module Encoder:", module.feat_extractor.__class__.__name__)
-        print("       Decoder:", module.predictor.__class__.__name__)
-        print("Optimizer:", module.optimizer.__class__.__name__, f"(lr = {module.lr})")
-        print("Loss function:", {"ct": module.ct_tal.__class__.__name__, "mr": module.mr_tal.__class__.__name__})
         print("Evaluation metric:", self.metric.__class__.__name__)
+        module.print_info()
         print("--------")
 
     def validation(self, module, ct_dtl, mr_dtl, label="masked", global_step=None):
