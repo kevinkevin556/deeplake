@@ -30,18 +30,36 @@ crop_sample = 2
 class SegmentationModule(nn.Module):
     def __init__(
         self,
+        feat_extractor=None,
+        predictor=None,
+        net=None,
         criterion: _Loss = DiceCELoss(to_onehot_y=True, softmax=True),
         optimizer: str = "AdamW",
         lr: float = 0.0001,
         num_classes: int = 16,
     ):
         super().__init__()
-        self.feat_extractor = UXNETEncoder(in_chans=1)
-        self.predictor = UXNETDecoder(out_chans=num_classes)
-        self.criterion = criterion
 
-        params = list(self.feat_extractor.parameters()) + list(self.predictor.parameters())
+        self.net = net
+        self.feat_extractor = feat_extractor
+        self.predictor = predictor
+
+        if net:
+            params = self.net.parameters()
+            if (feat_extractor is not None) or (predictor is not None):
+                raise Warning(
+                    "net and (feat_extractor, predictor) are both provided. However, only net will be trained."
+                )
+        elif (feat_extractor is not None) and (predictor is not None):
+            params = list(self.feat_extractor.parameters()) + list(self.predictor.parameters())
+        else:
+            # Default feature extractor and predictor
+            self.feat_extractor = UXNETEncoder(in_chans=1)
+            self.predictor = UXNETDecoder(out_chans=num_classes)
+            params = list(self.feat_extractor.parameters()) + list(self.predictor.parameters())
+
         differentiable_params = [p for p in params if p.requires_grad]
+        self.criterion = criterion
         self.lr = lr
         if optimizer == "AdamW":
             self.optimizer = AdamW(differentiable_params, lr=self.lr)
@@ -51,9 +69,11 @@ class SegmentationModule(nn.Module):
             self.optimizer = SGD(differentiable_params, lr=self.lr)
 
     def forward(self, x):
-        feature, skip_outputs = self.feat_extractor(x)
-        y = self.predictor((feature, skip_outputs))
-        # y = self.net(x)
+        if self.net:
+            y = self.net(x)
+        else:
+            feature, skip_outputs = self.feat_extractor(x)
+            y = self.predictor((feature, skip_outputs))
         return y
 
     def update(self, x, y):
@@ -78,6 +98,15 @@ class SegmentationModule(nn.Module):
     def load(self, checkpoint_dir):
         self.feat_extractor.load_state_dict(torch.load(os.path.join(checkpoint_dir, "feat_extractor_state.pth")))
         self.predictor.load_state_dict(torch.load(os.path.join(checkpoint_dir, "predictor_state.pth")))
+
+    def print_info(self):
+        if self.net:
+            print("Module:", self.net.__class__.__name___)
+        else:
+            print("Module Encoder:", self.feat_extractor.__class__.__name__)
+            print("       Decoder:", self.predictor.__class__.__name__)
+        print("Optimizer:", self.optimizer.__class__.__name__, f"(lr = {self.lr})")
+        print("Loss function:", repr(self.criterion))
 
 
 class SegmentationTrainer:
@@ -107,11 +136,8 @@ class SegmentationTrainer:
         print("# of Validation Samples:", len(val_dataloader))
         print("Max iteration:", self.max_iter, f"steps (validates per {self.eval_step} steps)")
         print("Checkpoint directory:", self.checkpoint_dir)
-        print("Module Encoder:", module.feat_extractor.__class__.__name__)
-        print("       Decoder:", module.predictor.__class__.__name__)
-        print("Optimizer:", module.optimizer.__class__.__name__, f"(lr = {module.lr})")
-        print("Loss function:", repr(module.criterion))
         print("Evaluation metric:", self.metric.__class__.__name__)
+        module.print_info()
         print("--------")
 
     def validation(self, module, dataloader, global_step=None):
