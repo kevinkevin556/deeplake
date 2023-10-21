@@ -233,15 +233,15 @@ def main():
     output = config["path"]["output"]
     debug = config["path"]["debug"]
     dataset = datasets[args.dataset]
-    modality = args.modality
-    masked = args.masked
-    train_data = args.train_data
-    mode = args.mode
+    modality = args.modality  # {"ct", "mr", "ct+mr"}
+    masked = args.masked  # {True, False}
+    train_data = args.train_data  # {"all", "split"}
+    mode = args.mode  # {"train", "test"}
     # Module
-    module_name = args.module
+    module_name = args.module  # {"segmentation", "dann"}
     pretrained = args.pretrained
     batch_size = args.batch_size
-    loss = args.loss
+    loss = args.loss  # {"dice2", "tal"}
     lr = args.lr
     optim = args.optim
     max_iter = args.max_iter
