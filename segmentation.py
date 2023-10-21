@@ -1,7 +1,4 @@
-import argparse
-import json
 import os
-from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -13,11 +10,9 @@ from monai.inferers import sliding_window_inference
 from monai.losses import DiceCELoss
 from monai.metrics import DiceMetric
 from monai.transforms import AsDiscrete
-from monai.utils import set_determinism
 from torch import nn
 from torch.nn.modules.loss import _Loss
 from torch.optim import SGD, Adam, AdamW
-from torch.utils.data import ConcatDataset
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
@@ -205,14 +200,14 @@ class SegmentationInitializer:
         return train_dataloader, val_dataloader, test_dataloader
 
     @staticmethod
-    def init_module(loss, optim, lr, data_class, modality, masked, fg, device):
+    def init_module(loss, optim, lr, data_class, modality, masked, fg, device, **kwargs):
         if loss != "tal":
             criterion = DiceCELoss(include_background=True, to_onehot_y=True, softmax=True)
         elif modality in ["ct", "mr"]:
             criterion = TargetAdaptiveLoss(AMOSDataset.num_classes, fg[modality], device)
         else:
             raise NotImplementedError("Target adaptive loss does not support ct+mr currently.")
-        module = SegmentationModule(optimizer=optim, lr=lr, criterion=criterion)
+        module = SegmentationModule(optimizer=optim, lr=lr, criterion=criterion, **kwargs)
         return module
 
     @staticmethod
