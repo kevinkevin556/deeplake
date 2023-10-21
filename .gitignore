@@ -1,3 +1,6 @@
+# Temporarily ignored files
+mskd.py
+
 # Neural Network checkpoints
 checkpoints/
 *.pt
