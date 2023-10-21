@@ -87,16 +87,22 @@ class SegmentationModule(nn.Module):
 
     def save(self, checkpoint_dir):
         Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
-        torch.save(self.feat_extractor.state_dict(), os.path.join(checkpoint_dir, "feat_extractor_state.pth"))
-        torch.save(self.predictor.state_dict(), os.path.join(checkpoint_dir, "predictor_state.pth"))
+        if self.net:
+            torch.save(self.net.state_dict(), os.path.join(checkpoint_dir, "net.pth"))
+        else:
+            torch.save(self.feat_extractor.state_dict(), os.path.join(checkpoint_dir, "feat_extractor_state.pth"))
+            torch.save(self.predictor.state_dict(), os.path.join(checkpoint_dir, "predictor_state.pth"))
 
     def load(self, checkpoint_dir):
-        self.feat_extractor.load_state_dict(torch.load(os.path.join(checkpoint_dir, "feat_extractor_state.pth")))
-        self.predictor.load_state_dict(torch.load(os.path.join(checkpoint_dir, "predictor_state.pth")))
+        if self.net:
+            self.net.load_state_dict(torch.load(os.path.join(checkpoint_dir, "net.pth")))
+        else:
+            self.feat_extractor.load_state_dict(torch.load(os.path.join(checkpoint_dir, "feat_extractor_state.pth")))
+            self.predictor.load_state_dict(torch.load(os.path.join(checkpoint_dir, "predictor_state.pth")))
 
     def print_info(self):
         if self.net:
-            print("Module:", self.net.__class__.__name___)
+            print("Module:", self.net.__class__.__name__)
         else:
             print("Module Encoder:", self.feat_extractor.__class__.__name__)
             print("       Decoder:", self.predictor.__class__.__name__)
