@@ -10,10 +10,11 @@ from typing import Tuple, Union
 
 import torch.nn as nn
 import torch.nn.functional as F
-from lib.models.tools.module_helper import ModuleHelper
-from lib.utils.tools.logger import Logger as Log
 from monai.networks.blocks.dynunet_block import UnetOutBlock
 from monai.networks.blocks.unetr_block import UnetrBasicBlock, UnetrUpBlock
+
+from lib.models.tools.module_helper import ModuleHelper
+from lib.utils.tools.logger import Logger as Log
 from networks.uxnet3d.uxnet_encoder import uxnet_conv
 
 
@@ -285,9 +286,9 @@ class UXNETEncoder(nn.Module):
             res_block=res_block,
         )
 
-    def forward(self, x_in):
-        outs = self.uxnet_3d(x_in)
-        enc1 = self.encoder1(x_in)
+    def forward(self, x):
+        outs = self.uxnet_3d(x)
+        enc1 = self.encoder1(x)
         x2 = outs[0]
         enc2 = self.encoder2(x2)
         x3 = outs[1]
