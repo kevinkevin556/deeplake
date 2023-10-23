@@ -206,9 +206,17 @@ def get_datasets(
             mr_train_dataset, mr_val_dataset, mr_test_dataset = split_train_data(
                 dataset, "mr", mr_bg_mapping, data_config
             )
-            train_dataset = ConcatDataset([ct_train_dataset, mr_train_dataset])
-            val_dataset = ConcatDataset([ct_val_dataset, mr_val_dataset])
-            test_dataset = ConcatDataset([ct_test_dataset, mr_test_dataset])
+
+            if modality == "ct+mr:balance":
+                train_mul = len(ct_train_dataset) // len(mr_train_dataset)
+                val_mul = len(ct_val_dataset) // len(mr_val_dataset)
+                train_dataset = ConcatDataset([ct_train_dataset] + [mr_train_dataset] * train_mul)
+                val_dataset = ConcatDataset([ct_val_dataset] + [mr_val_dataset] * val_mul)
+                test_dataset = ConcatDataset([ct_test_dataset, mr_test_dataset])
+            else:
+                train_dataset = ConcatDataset([ct_train_dataset, mr_train_dataset])
+                val_dataset = ConcatDataset([ct_val_dataset, mr_val_dataset])
+                test_dataset = ConcatDataset([ct_test_dataset, mr_test_dataset])
     else:
         raise ValueError("Got an invalid input of option --train_data.")
 
