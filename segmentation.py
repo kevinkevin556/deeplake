@@ -1,4 +1,5 @@
 import os
+from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +22,8 @@ from networks.uxnet3d.network_backbone import UXNETDecoder, UXNETEncoder
 
 crop_sample = 2
 
+torch.backends.cudnn.benchmark = True
+
 
 class SegmentationModule(nn.Module):
     def __init__(
@@ -32,6 +35,7 @@ class SegmentationModule(nn.Module):
         optimizer: str = "AdamW",
         lr: float = 0.0001,
         num_classes: int = 16,
+        amp=False,
     ):
         super().__init__()
 
@@ -62,6 +66,7 @@ class SegmentationModule(nn.Module):
             self.optimizer = Adam(differentiable_params, lr=self.lr)
         if optimizer == "SGD":
             self.optimizer = SGD(differentiable_params, lr=self.lr)
+        self.amp = amp
 
     def forward(self, x):
         if self.net:
@@ -72,9 +77,10 @@ class SegmentationModule(nn.Module):
         return y
 
     def update(self, x, y):
-        output = self.forward(x)
-        loss = self.criterion(output, y)
         self.optimizer.zero_grad()
+        with torch.autocast(device_type="cuda") if self.amp else nullcontext():
+            output = self.forward(x)
+            loss = self.criterion(output, y)
         loss.backward()
         self.optimizer.step()
         return loss.item()
