@@ -55,11 +55,11 @@ class AdversarialLoss(nn.Module):
 class DANNModule(nn.Module):
     def __init__(
         self,
+        num_classes: int,
         ct_foreground: Optional[list] = None,
         mr_foreground: Optional[list] = None,
         optimizer: str = "AdamW",
         lr: float = 0.0001,
-        num_classes: int = 16,
     ):
         super().__init__()
 
@@ -277,10 +277,10 @@ class DANNTrainer:
                 writer.add_scalar(f"train/{self.metric.__class__.__name__}", val_metric, step)
                 if val_metric > best_metric:
                     module.save(self.checkpoint_dir)
-                    print(f"Model saved! Validation: (New) {val_metric:2.7f} > (Old) {best_metric:2.7f}")
+                    tqdm.write(f"Model saved! Validation: (New) {val_metric:2.7f} > (Old) {best_metric:2.7f}")
                     best_metric = val_metric
                 else:
-                    print(f"No improvement. Validation: (New) {val_metric:2.7f} <= (Old) {best_metric:2.7f}")
+                    tqdm.write(f"No improvement. Validation: (New) {val_metric:2.7f} <= (Old) {best_metric:2.7f}")
 
 
 class DANNInitializer:
@@ -303,11 +303,11 @@ class DANNInitializer:
         )
 
     @staticmethod
-    def init_module(loss, optim, lr, data_class, modality, masked, fg, device):
+    def init_module(loss, optim, lr, dataset, modality, masked, device):
         if loss != "tal" and not masked:
-            module = DANNModule(None, None, optim, lr, data_class.num_classes)
+            module = DANNModule(None, None, optim, lr, dataset.num_classes)
         else:
-            module = DANNModule(fg["ct"], fg["mr"], optim, lr, data_class.num_classes)
+            module = DANNModule(dataset["fg"]["ct"], dataset["fg"]["mr"], optim, lr, dataset.num_classes)
         return module
 
     @staticmethod

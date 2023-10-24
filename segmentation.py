@@ -1,15 +1,15 @@
 import os
 from contextlib import nullcontext
 from pathlib import Path
+from typing import Literal, Optional
 
 import numpy as np
 import torch
 import tqdm
-from medaset.amos import AMOSDataset
 from monai.data import DataLoader, decollate_batch
 from monai.inferers import sliding_window_inference
 from monai.losses import DiceCELoss
-from monai.metrics import DiceMetric
+from monai.metrics import DiceMetric, Metric
 from monai.transforms import AsDiscrete
 from torch import nn
 from torch.nn.modules.loss import _Loss
@@ -28,13 +28,13 @@ torch.backends.cudnn.benchmark = True
 class SegmentationModule(nn.Module):
     def __init__(
         self,
-        feat_extractor=None,
-        predictor=None,
-        net=None,
+        num_classes: int,
+        feat_extractor: Optional[nn.Module] = None,
+        predictor: Optional[nn.Module] = None,
+        net: Optional[nn.Module] = None,
         criterion: _Loss = DiceCELoss(to_onehot_y=True, softmax=True),
         optimizer: str = "AdamW",
         lr: float = 0.0001,
-        num_classes: int = 16,
         amp=False,
     ):
         super().__init__()
@@ -119,19 +119,20 @@ class SegmentationModule(nn.Module):
 class SegmentationTrainer:
     def __init__(
         self,
-        max_iter=40000,
-        metric=DiceMetric(include_background=True, reduction="mean", get_not_nans=False),
-        eval_step=500,
-        checkpoint_dir="./default_ckpt/",
-        device="cuda",
+        num_classes: int,
+        max_iter: int = 40000,
+        metric: Metric = DiceMetric(include_background=True, reduction="mean", get_not_nans=False),
+        eval_step: int = 500,
+        checkpoint_dir: str = "./default_ckpt/",
+        device: Literal["cuda", "cpu"] = "cuda",
     ):
         self.max_iter = max_iter
         self.metric = metric
         self.eval_step = eval_step
         self.checkpoint_dir = checkpoint_dir
         self.postprocess = {
-            "x": AsDiscrete(argmax=True, to_onehot=AMOSDataset.num_classes),
-            "y": AsDiscrete(to_onehot=AMOSDataset.num_classes),
+            "x": AsDiscrete(argmax=True, to_onehot=num_classes),
+            "y": AsDiscrete(to_onehot=num_classes),
         }
         self.device = device
 
@@ -212,11 +213,11 @@ class SegmentationInitializer:
         return train_dataloader, val_dataloader, test_dataloader
 
     @staticmethod
-    def init_module(loss, optim, lr, data_class, modality, masked, fg, device, **kwargs):
+    def init_module(loss, optim, lr, dataset, modality, masked, device, **kwargs):
         if loss != "tal":
             criterion = DiceCELoss(include_background=True, to_onehot_y=True, softmax=True)
         elif modality in ["ct", "mr"]:
-            criterion = TargetAdaptiveLoss(AMOSDataset.num_classes, fg[modality], device)
+            criterion = TargetAdaptiveLoss(dataset["num_classes"], dataset["fg"][modality], device)
         else:
             raise NotImplementedError("Target adaptive loss does not support ct+mr currently.")
         module = SegmentationModule(optimizer=optim, lr=lr, criterion=criterion, **kwargs)
