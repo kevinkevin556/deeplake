@@ -1,4 +1,5 @@
 import os
+import random
 from itertools import chain
 from pathlib import Path
 from typing import Literal
@@ -88,21 +89,28 @@ class PretrainedModules:
             raise e
 
     def get_hard_label(self, image):
-        # TODO
-        return None
+        label0 = torch.argmax(self.pretrained_module0(image))
+        label1 = torch.argmax(self.pretrained_module1(image))
+        # Because we do not know which label is better
+        # randomly pick one as the base mask and fill background pixels with the other
+        if random.randint(0, 1) == 0:
+            return label0 + label1[label0 == 0]
+        else:
+            return label1 + label0[label1 == 0]
 
 
 class CoTrainingModule(nn.Module):
     def __init__(
         self,
+        num_classes: int,
         net_class: nn.Module = BasicUNet,
         alpha: float = 0.999,
         lambda_focal: float = 1.0,
         lambda_dice: float = 0.1,
         lambda_soft: float = 0.1,
         optimizer: str = "SGD",
-        lr: float = 0.04,
-        num_classes: int = 16,
+        lr: float = 0.05,
+        T_max: int = 10000,
     ):
         super().__init__()
 
@@ -126,7 +134,7 @@ class CoTrainingModule(nn.Module):
             self.optimizer = Adam(params, lr=self.lr)
         if optimizer == "SGD":
             self.optmizer = SGD(params, lr=self.lr, weight_decay=0.0005, momentum=0.9)
-        self.scheduler = CosineAnnealingLR(self.optimizer, T_max=10000)
+        self.scheduler = CosineAnnealingLR(self.optimizer, T_max=T_max)
 
         # Losses
         self.focal_loss = FocalLoss(include_background=True)
@@ -200,9 +208,9 @@ class CoTrainingTrainer:
     def __init__(
         self,
         num_classes: int,
-        max_iter: int = 40000,
+        max_iter: int = 10000,
         metric: Metric = DiceMetric(include_background=True, reduction="mean", get_not_nans=False),
-        eval_step: int = 500,
+        eval_step: int = 100,
         checkpoint_dir: str = "./checkpoints/",
         device: Literal["cuda", "cpu"] = "cuda",
     ):
@@ -300,3 +308,34 @@ class CoTrainingTrainer:
                     val_pbar.set_description(simple_val_desc.format(metric_name, batch_metric))
         mean_val_metric = np.mean(val_metrics)
         return mean_val_metric
+
+
+class CoTrainingInitializer:
+    @staticmethod
+    def init_dataloaders(train_dataset, val_dataset, test_dataset, batch_size, dev):
+        train_dataloaders = tuple(
+            [DataLoader(train_dataset[i], batch_size=batch_size, shuffle=~dev, pin_memory=True) for i in range(2)]
+        )
+        val_dataloaders = tuple(
+            [DataLoader(val_dataset[i], batch_size=1, shuffle=False, pin_memory=True) for i in range(2)]
+        )
+        test_dataloaders = tuple(
+            [DataLoader(test_dataset[i], batch_size=1, shuffle=False, pin_memory=True) for i in range(2)]
+        )
+        return train_dataloaders, val_dataloaders, test_dataloaders
+
+    @staticmethod
+    def init_module(loss, optim, lr, dataset, modality, masked, device):
+        module = CoTrainingModule(num_classes=dataset["num_classes"], lr=lr)
+        return module
+
+    @staticmethod
+    def init_trainer(num_classes, max_iter, eval_step, checkpoint_dir, device):
+        trainer = CoTrainingTrainer(
+            num_classes=num_classes,
+            max_iter=max_iter,
+            eval_step=eval_step,
+            checkpoint_dir=checkpoint_dir,
+            device=device,
+        )
+        return trainer
