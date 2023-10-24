@@ -1,6 +1,9 @@
 # Temporarily ignored files
 mskd.py
 
+# Confiuguration
+config.ini
+
 # Neural Network checkpoints
 checkpoints/
 *.pt
