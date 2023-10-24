@@ -17,6 +17,7 @@ from medaset.amos import (
 from monai.utils import set_determinism
 from torch.utils.data import ConcatDataset
 
+from co_training import CoTrainingInitializer
 from dann import DANNInitializer
 from segmentation import SegmentationInitializer
 
@@ -29,6 +30,10 @@ modules = {
     },
     "dann": {
         "initializer": DANNInitializer,
+        "return_modality_dataset": True,
+    },
+    "co_training": {
+        "initializer": CoTrainingInitializer,
         "return_modality_dataset": True,
     },
 }
@@ -298,6 +303,7 @@ def main():
     # create subfolder based on time
     checkpoint_dir = Path(checkpoint_dir) / datetime.now().strftime("%Y%m%d-%H%M%S")
     trainer = modules[module_name]["initializer"].init_trainer(
+        num_classes=dataset["num_classes"],
         max_iter=max_iter,
         eval_step=eval_step,
         checkpoint_dir=checkpoint_dir,
