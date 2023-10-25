@@ -1,5 +1,6 @@
 import os
 import random
+from copy import deepcopy
 from itertools import chain
 from pathlib import Path
 from typing import Literal
@@ -25,12 +26,38 @@ from tqdm.auto import tqdm
 from segmentation import SegmentationModule, SegmentationTrainer
 
 
+def module_add(self, addend):
+    self_module = deepcopy(self)
+    with torch.no_grad():
+        for self_v, addend_v in zip(self_module.state_dict().values(), addend.state_dict().values()):
+            self_v.copy_(self_v + addend_v)
+    torch.cuda.empty_cache()
+    return self_module
+
+
+setattr(nn.Module, "__add__", module_add)
+
+
+def module_mul(self, multiplier):
+    self_module = deepcopy(self)
+    with torch.no_grad():
+        for self_v in self_module.state_dict().values():
+            self_v.copy_(self_v * multiplier)
+    torch.cuda.empty_cache()
+    return self_module
+
+
+setattr(nn.Module, "__mul__", module_mul)
+
+
 class SoftLoss(nn.Module):
     def __init__(self, num_classes):
         super().__init__()
         self.num_classes = num_classes
 
     def forward(self, pred_logits, lab_logits, y):
+        lab_logits.requires_grad = False
+        y.requires_grad = False
         Ty = 1 - one_hot(y, self.num_classes)
         loss = -torch.sum(Ty * F.softmax(lab_logits, dim=1) * F.log_softmax(pred_logits, dim=1))
         return loss
@@ -107,14 +134,17 @@ class PretrainedModules:
             raise e
 
     def get_hard_label(self, image):
-        label0 = torch.argmax(self.pretrained_module0(image), dim=1, keepdim=True)
-        label1 = torch.argmax(self.pretrained_module1(image), dim=1, keepdim=True)
-        # Because we do not know which label is better
-        # randomly pick one as the base mask and fill background pixels with the other
-        if random.randint(0, 1) == 0:
-            return label0 + (label0 == 0) * 1 * label1
-        else:
-            return label1 + (label1 == 0) * 1 * label0
+        self.pretrained_module0.eval()
+        self.pretrained_module1.eval()
+        with torch.no_grad():
+            label0 = torch.argmax(self.pretrained_module0(image), dim=1, keepdim=True)
+            label1 = torch.argmax(self.pretrained_module1(image), dim=1, keepdim=True)
+            # Because we do not know which label is better
+            # randomly pick one as the base mask and fill background pixels with the other
+            if random.randint(0, 1) == 0:
+                return label0 + (label0 == 0) * 1 * label1
+            else:
+                return label1 + (label1 == 0) * 1 * label0
 
 
 class CoTrainingModule(nn.Module):
@@ -127,9 +157,8 @@ class CoTrainingModule(nn.Module):
         lambda_dice: float = 0.1,
         lambda_soft: float = 0.1,
         optimizer: str = "SGD",
-        lr: float = 0.05,
+        lr: float = 0.001,
         T_max: int = 10000,
-        focal_alpha=None,
     ):
         super().__init__()
 
@@ -143,6 +172,12 @@ class CoTrainingModule(nn.Module):
         self.num_classes = num_classes  # number of AMOS classes
         self.net1 = net_class(in_channels=1, out_channels=num_classes)
         self.net2 = net_class(in_channels=1, out_channels=num_classes)
+        self.Enet1 = deepcopy(self.net1)
+        self.Enet2 = deepcopy(self.net2)
+        for param in self.Enet1.parameters():
+            param.requires_grad = False
+        for param in self.Enet2.parameters():
+            param.requires_grad = False
 
         # # Optimizer
         params = list(self.net1.parameters()) + list(self.net2.parameters())
@@ -189,24 +224,25 @@ class CoTrainingModule(nn.Module):
         dice_loss2 = self.dice_loss(self.net2(x), y_hat)
 
         # soft pseudo label
-        self.Enet1 = alpha * self.Enet1 + (1 - alpha) * self.net1
-        self.Enet2 = alpha * self.Enet2 + (1 - alpha) * self.net2
+        self.Enet1 = self.Enet1 * alpha + self.net1 * (1 - alpha)
+        self.Enet2 = self.Enet2 * alpha + self.net2 * (1 - alpha)
         soft_loss1 = self.soft_loss(self.net1(x), self.Enet2(x), y)
         soft_loss2 = self.soft_loss(self.net2(x), self.Enet1(x), y)
 
         # total loss and back-propagation
-        total_loss = (
-            lbd_focal * (focal_loss1 + focal_loss2)
-            + lbd_dice * (dice_loss1 + dice_loss2)
-            + lbd_rampup * lbd_soft * (soft_loss1 + soft_loss2)
-        )
+        total_focal = lbd_focal * (focal_loss1 + focal_loss2)
+        total_dice = lbd_dice * (dice_loss1 + dice_loss2)
+        total_soft = lbd_rampup * lbd_soft * (soft_loss1 + soft_loss2)
+        total_loss = total_focal + total_dice + total_soft
+        # total_loss = (
+        #     lbd_focal * (focal_loss1 + focal_loss2)
+        #     + lbd_dice * (dice_loss1 + dice_loss2)
+        #     + lbd_rampup * lbd_soft * (soft_loss1 + soft_loss2)
+        # )
         total_loss.backward()
         self.optimizer.step()
+        return total_focal.item(), total_dice.item(), total_soft.item()
         return total_loss.item()
-
-    def temporal_average(self):
-        # TODO: Enet + net
-        pass
 
     def inference(self, x, roi_size=(96, 96, 96), sw_batch_size=2):
         # Using sliding windows
@@ -279,8 +315,16 @@ class CoTrainingTrainer:
         print("--------")
 
     def pretrain_single_organ(self, module_id, train_dataloader, val_dataloader):
+        assert module_id in [0, 1], f"Invalid module id. Got {module_id}, expect {0, 1}"
         self.pretrained_modules.train(module_id, train_dataloader, val_dataloader)
         self.pretrained_modules.load(module_id)
+        torch.cuda.empty_cache()
+        if module_id == 0:
+            for param in self.pretrained_modules.pretrained_module0.parameters():
+                param.requires_grad = False
+        else:
+            for param in self.pretrained_modules.pretrained_module1.parameters():
+                param.requires_grad = False
 
     def cotrain_multi_organ(self, module, train_dataloader, val_dataloader):
         best_metric = 0
@@ -295,9 +339,15 @@ class CoTrainingTrainer:
             batch = next(iter(train_dataloader))
             image, mask = batch["image"].to(self.device), batch["label"].to(self.device)
             mask_hat = self.pretrained_modules.get_hard_label(image)
-            loss = module.update(image, mask_hat, mask)
-            train_pbar.set_description(f"Training ({step+1} / {self.max_iter} Steps) (loss={loss:2.5f})")
-            writer.add_scalar(f"train/{module.criterion.__class__.__name__}", loss, step)
+            # There is no detail description about how lambda_rampup is gradually increased during training,
+            # so I apply a similar increasing strategy as the I do to the GRL weight.
+            p = float(step) / self.max_iter
+            q = 2.0 / (1.0 + np.exp(-10 * p)) - 1
+            focal, dice, soft = module.update(x=image, y_hat=mask_hat, y=mask, lbd_rampup=q)
+            train_pbar.set_description(
+                f"Training ({step+1} / {self.max_iter} Steps) (focal={focal:2.5f}, dice={dice:2.5f}, soft={soft:2.5f})"
+            )
+            writer.add_scalar(f"train/loss", (focal + dice + soft), step)
 
             # Validation
             if (step + 1) % self.eval_step == 0 or (step + 1) == self.max_iter:
@@ -333,18 +383,16 @@ class CoTrainingTrainer:
 
     def train(self, module, train_dataloader, val_dataloader, not_pretrained=[0, 1]):
         w = self.get_organ_pixels(train_dataloader)
-        w = w[1:] ** (-1)
-        focal_alpha = w / torch.sum(w)
+        w_inv = w[1:] ** (-1)
+        focal_alpha = w_inv / torch.sum(w_inv)
         module.focal_loss = FocalLoss(
             include_background=False,
             to_onehot_y=True,
             gamma=2,
             weight=focal_alpha,
         )
-
         for i in not_pretrained:
             self.pretrain_single_organ(i, train_dataloader[i], val_dataloader[i])
-
         self.show_training_info(module, train_dataloader, val_dataloader)
         self.cotrain_multi_organ(module, train_dataloader, val_dataloader)
 
