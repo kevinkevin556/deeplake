@@ -7,16 +7,18 @@ from typing import Literal
 import numpy as np
 import torch
 import torch.nn.functional as F
-from monai.data import DataLoader, decollate_batch
+from medaset.transforms import ApplyMaskMappingd, BackgroundifyClassesd
+from monai.data import DataLoader, Dataset, decollate_batch
 from monai.inferers import sliding_window_inference
 from monai.losses import DiceCELoss, DiceLoss, FocalLoss
 from monai.metrics import DiceMetric, Metric
 from monai.networks.nets import BasicUNet
 from monai.networks.utils import one_hot
-from monai.transforms import AsDiscrete
+from monai.transforms import AddChanneld, AsDiscrete, Compose, LoadImaged, ToTensord
 from torch import nn
 from torch.optim import SGD, Adam, Optimizer
 from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.utils.data import ConcatDataset
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
@@ -35,45 +37,61 @@ class SoftLoss(nn.Module):
 
 
 class PretrainedModules:
-    def __init__(self, max_iter, metric, eval_step, checkpoint_dir, device):
+    def __init__(
+        self,
+        num_classes: int,
+        max_iter: int,
+        metric: Metric,
+        eval_step: int,
+        checkpoint_dir: str,
+        device: Literal["cuda", "cpu"],
+    ):
+        self.num_classes = num_classes
         self.max_iter = max_iter
         self.metric = metric
         self.eval_step = eval_step
-        self.checkpoint = checkpoint_dir
+        self.checkpoint_dir = checkpoint_dir
         self.device = device
 
         self.pretrained_module0 = SegmentationModule(
-            net=BasicUNet(in_channels=1, out_channels=2, spatial_dims=3),
-            criterion=DiceCELoss(to_onehot=True, softmax=True),
+            num_classes=num_classes,
+            net=BasicUNet(in_channels=1, out_channels=num_classes, spatial_dims=3),
+            criterion=DiceCELoss(to_onehot_y=True, softmax=True),
             optimizer="Adam",
             lr=0.001,
         )
+        self.pretrained_module0.to(self.device)
+
         self.pretrained_module1 = SegmentationModule(
-            net=BasicUNet(in_channels=1, out_channels=2, spatial_dims=3),
-            criterion=DiceCELoss(to_onehot=True, softmax=True),
+            num_classes=num_classes,
+            net=BasicUNet(in_channels=1, out_channels=num_classes, spatial_dims=3),
+            criterion=DiceCELoss(to_onehot_y=True, softmax=True),
             optimizer="Adam",
             lr=0.001,
         )
+        self.pretrained_module1.to(self.device)
 
     def train(self, module_id, train_dataloader, val_dataloader):
         if module_id == 0:
             trainer = SegmentationTrainer(
+                num_classes=self.num_classes,
                 max_iter=self.max_iter,
                 metric=self.metric,
                 eval_step=self.eval_step,
-                checkpoint=os.path.join(self.checkpoint_dir, "pretrained_0"),
+                checkpoint_dir=os.path.join(self.checkpoint_dir, "pretrained_0"),
                 device=self.device,
             )
             trainer.train(self.pretrained_module0, train_dataloader, val_dataloader)
         elif module_id == 1:
             trainer = SegmentationTrainer(
+                num_classes=self.num_classes,
                 max_iter=self.max_iter,
                 metric=self.metric,
                 eval_step=self.eval_step,
-                checkpoint=os.path.join(self.checkpoint_dir, "pretrained_1"),
+                checkpoint_dir=os.path.join(self.checkpoint_dir, "pretrained_1"),
                 device=self.device,
             )
-            self.trainer.train(self.pretrained_module1, train_dataloader, val_dataloader)
+            trainer.train(self.pretrained_module1, train_dataloader, val_dataloader)
         else:
             raise ValueError(f"Invalid module id. Expect 0 or 1, got {module_id}.")
 
@@ -89,14 +107,14 @@ class PretrainedModules:
             raise e
 
     def get_hard_label(self, image):
-        label0 = torch.argmax(self.pretrained_module0(image))
-        label1 = torch.argmax(self.pretrained_module1(image))
+        label0 = torch.argmax(self.pretrained_module0(image), dim=1, keepdim=True)
+        label1 = torch.argmax(self.pretrained_module1(image), dim=1, keepdim=True)
         # Because we do not know which label is better
         # randomly pick one as the base mask and fill background pixels with the other
         if random.randint(0, 1) == 0:
-            return label0 + label1[label0 == 0]
+            return label0 + (label0 == 0) * 1 * label1
         else:
-            return label1 + label0[label1 == 0]
+            return label1 + (label1 == 0) * 1 * label0
 
 
 class CoTrainingModule(nn.Module):
@@ -111,6 +129,7 @@ class CoTrainingModule(nn.Module):
         optimizer: str = "SGD",
         lr: float = 0.05,
         T_max: int = 10000,
+        focal_alpha=None,
     ):
         super().__init__()
 
@@ -122,23 +141,28 @@ class CoTrainingModule(nn.Module):
 
         # Network components
         self.num_classes = num_classes  # number of AMOS classes
-        self.pretrained_net1 = None
-        self.pretrained_net2 = None
         self.net1 = net_class(in_channels=1, out_channels=num_classes)
         self.net2 = net_class(in_channels=1, out_channels=num_classes)
 
         # # Optimizer
         params = list(self.net1.parameters()) + list(self.net2.parameters())
         self.lr = lr
-        if optimizer == "Adam":
-            self.optimizer = Adam(params, lr=self.lr)
-        if optimizer == "SGD":
-            self.optmizer = SGD(params, lr=self.lr, weight_decay=0.0005, momentum=0.9)
+        if optimizer != "SGD":
+            raise UserWarning("No other optimizers than SGD is supported. Use SGD.")
+        self.optimizer = SGD(params, lr=self.lr, weight_decay=0.0005, momentum=0.9)
         self.scheduler = CosineAnnealingLR(self.optimizer, T_max=T_max)
 
         # Losses
-        self.focal_loss = FocalLoss(include_background=True)
-        self.dice_loss = DiceLoss(include_background=True)
+        self.focal_loss = FocalLoss(
+            include_background=False,
+            to_onehot_y=True,
+            gamma=2,
+        )
+        self.dice_loss = DiceLoss(
+            include_background=True,
+            to_onehot_y=True,
+            softmax=True,
+        )
         self.soft_loss = SoftLoss(num_classes)
 
     def forward(self, x, net=1):
@@ -180,8 +204,12 @@ class CoTrainingModule(nn.Module):
         self.optimizer.step()
         return total_loss.item()
 
+    def temporal_average(self):
+        # TODO: Enet + net
+        pass
+
     def inference(self, x, roi_size=(96, 96, 96), sw_batch_size=2):
-        # # Using sliding windows
+        # Using sliding windows
         self.eval()
         return sliding_window_inference(x, roi_size, sw_batch_size, self.forward)
 
@@ -201,7 +229,11 @@ class CoTrainingModule(nn.Module):
         print("Module Net-1:", self.net1.__class__.__name__)
         print("       Net-2:", self.net2.__class__.__name__)
         print("Optimizer:", self.optimizer.__class__.__name__, f"(lr = {self.lr})")
-        print("Loss function:", {"ct": self.ct_tal.__class__.__name__, "mr": self.mr_tal.__class__.__name__})
+        print(
+            f"Loss function: {self.focal_loss.__class__.__name__}, "
+            + f"{self.dice_loss.__class__.__name__}, "
+            + f"{self.soft_loss.__class__.__name__}"
+        )
 
 
 class CoTrainingTrainer:
@@ -214,6 +246,7 @@ class CoTrainingTrainer:
         checkpoint_dir: str = "./checkpoints/",
         device: Literal["cuda", "cpu"] = "cuda",
     ):
+        self.num_classes = num_classes
         self.max_iter = max_iter
         self.metric = metric
         self.eval_step = eval_step
@@ -221,7 +254,8 @@ class CoTrainingTrainer:
         Path(self.checkpoint_dir).mkdir(parents=True, exist_ok=True)
         self.device = device
         self.pretrained_modules = PretrainedModules(
-            max_iter=10000,
+            num_classes=num_classes,
+            max_iter=max_iter,
             metric=DiceMetric(),
             eval_step=100,
             checkpoint_dir=checkpoint_dir,
@@ -250,6 +284,7 @@ class CoTrainingTrainer:
 
     def cotrain_multi_organ(self, module, train_dataloader, val_dataloader):
         best_metric = 0
+        train_dataloader = chain(*train_dataloader)  # Concatenate two generators (dataloaders) into one
         train_pbar = tqdm(range(self.max_iter), dynamic_ncols=True)
         writer = SummaryWriter(log_dir=self.checkpoint_dir)
         writer.add_scalar(f"train/{self.metric.__class__.__name__}", 0, 0)  # validation metric starts from zero
@@ -274,7 +309,39 @@ class CoTrainingTrainer:
                 else:
                     tqdm.write(f"No improvement. Validation: (New) {val_metric:2.7f} <= (Old) {best_metric:2.7f}")
 
+    def get_organ_pixels(self, dataloader):
+        data_class = dataloader[0].dataset.dataset.__class__
+        target_path = dataloader[0].dataset.dataset.target_path + dataloader[1].dataset.dataset.target_path
+        excluded_classes = getattr(data_class, "excluded_classes", None)
+        relabelling = getattr(data_class, "relabelling", None)
+
+        transforms = [
+            LoadImaged(keys=["label"], image_only=True, dtype=np.uint8),
+            AddChanneld(keys=["label"]),
+        ]
+        if excluded_classes:
+            transforms.append(BackgroundifyClassesd(keys=["label"], classes=excluded_classes))
+        if relabelling:
+            transforms.append(ApplyMaskMappingd(keys=["label"], mask_mapping=relabelling))
+        transforms.append(ToTensord(keys=["label"], dtype=torch.uint8, device=self.device))
+
+        temp_dataset = Dataset(data=[{"label": p} for p in target_path], transform=Compose(transforms))
+        organ_pixel_count = torch.zeros(self.num_classes).to(self.device)
+        for d in tqdm(temp_dataset):
+            organ_pixel_count += torch.bincount(torch.flatten(d["label"]))
+        return organ_pixel_count
+
     def train(self, module, train_dataloader, val_dataloader, not_pretrained=[0, 1]):
+        w = self.get_organ_pixels(train_dataloader)
+        w = w[1:] ** (-1)
+        focal_alpha = w / torch.sum(w)
+        module.focal_loss = FocalLoss(
+            include_background=False,
+            to_onehot_y=True,
+            gamma=2,
+            weight=focal_alpha,
+        )
+
         for i in not_pretrained:
             self.pretrain_single_organ(i, train_dataloader[i], val_dataloader[i])
 
@@ -284,7 +351,7 @@ class CoTrainingTrainer:
     def validation(self, module, dataloader, global_step=None, **kwargs):
         module.eval()
         val_metrics = []
-        val_pbar = tqdm(chain(**dataloader), dynamic_ncols=True)
+        val_pbar = tqdm(chain(*dataloader), dynamic_ncols=True)
         metric_name = self.metric.__class__.__name__
         train_val_desc = "Validate ({} Steps) ({}={:2.5f})"  # progress bar description used during training
         simple_val_desc = "Validate ({}={:2.5f})"  # progress bar description used when the network is tested
