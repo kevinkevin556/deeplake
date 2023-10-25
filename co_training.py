@@ -1,3 +1,15 @@
+"""
+Implementation based on the following work:
+
+Huang, R., Zheng, Y., Hu, Z., Zhang, S., Li, H. (2020). Multi-organ Segmentation via Co-
+training Weight-Averaged Models from Few-Organ Datasets. In: Martel, A.L., et al. Medical
+Image Computing and Computer Assisted Intervention – MICCAI 2020. MICCAI 2020. 
+Lecture Notes in Computer Science(), vol 12264. Springer, Cham. 
+https://doi.org/10.1007/978-3-030-59719-1_15
+
+@author: kevinkevin556
+"""
+
 import os
 import random
 from copy import deepcopy
@@ -17,9 +29,8 @@ from monai.networks.nets import BasicUNet
 from monai.networks.utils import one_hot
 from monai.transforms import AddChanneld, AsDiscrete, Compose, LoadImaged, ToTensord
 from torch import nn
-from torch.optim import SGD, Adam, Optimizer
+from torch.optim import SGD
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from torch.utils.data import ConcatDataset
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
