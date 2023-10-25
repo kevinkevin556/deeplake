@@ -123,7 +123,7 @@ class SegmentationTrainer:
         max_iter: int = 40000,
         metric: Metric = DiceMetric(include_background=True, reduction="mean", get_not_nans=False),
         eval_step: int = 500,
-        checkpoint_dir: str = "./default_ckpt/",
+        checkpoint_dir: str = "./checkpoints/",
         device: Literal["cuda", "cpu"] = "cuda",
     ):
         self.max_iter = max_iter
