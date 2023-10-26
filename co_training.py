@@ -15,7 +15,7 @@ import random
 from copy import deepcopy
 from itertools import chain
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -26,12 +26,13 @@ from monai.inferers import sliding_window_inference
 from monai.losses import DiceCELoss, DiceLoss, FocalLoss
 from monai.metrics import DiceMetric, Metric
 from monai.networks.nets import BasicUNet
-from monai.networks.utils import one_hot
 from monai.transforms import AddChanneld, AsDiscrete, Compose, LoadImaged, ToTensord
 from torch import nn
 from torch.optim import SGD
 from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.utils.data import ConcatDataset, Subset
 from torch.utils.tensorboard import SummaryWriter
+from torchtyping import TensorType
 from tqdm.auto import tqdm
 
 from segmentation import SegmentationModule, SegmentationTrainer
@@ -61,16 +62,33 @@ def module_mul(self, multiplier):
 setattr(nn.Module, "__mul__", module_mul)
 
 
+def get_target_path(data):
+    if isinstance(data, (Subset, DataLoader)):
+        return get_target_path(data.dataset)
+    elif isinstance(data, ConcatDataset):
+        output = set(chain.from_iterable([get_target_path(d) for d in data.datasets]))
+        return list(output)
+    elif isinstance(data, Dataset):
+        return data.target_path
+    else:
+        raise TypeError("Obtained invalid type of dataset when parsing target_path.")
+
+
 class SoftLoss(nn.Module):
     def __init__(self, num_classes):
         super().__init__()
         self.num_classes = num_classes
 
-    def forward(self, pred_logits, lab_logits, y):
+    def forward(
+        self,
+        pred_logits: TensorType["N", "C", "H", "W", "D"],
+        lab_logits: TensorType["N", "C", "H", "W", "D"],
+        y: TensorType["N", 1, "H", "W", "D"],
+    ):
         lab_logits.requires_grad = False
         y.requires_grad = False
-        Ty = 1 - one_hot(y, self.num_classes)
-        loss = -torch.sum(Ty * F.softmax(lab_logits, dim=1) * F.log_softmax(pred_logits, dim=1))
+        Ty = (y == 0) * 1  # region mask: dim = (N, 1, H, W, D)
+        loss = -torch.sum(F.softmax(lab_logits, dim=1) * F.log_softmax(pred_logits, dim=1) * Ty)
         return loss
 
 
@@ -133,16 +151,24 @@ class PretrainedModules:
         else:
             raise ValueError(f"Invalid module id. Expect 0 or 1, got {module_id}.")
 
-    def load(self, module_id):
+    def load(self, module_id, checkpoint_dir=None):
         try:
             if module_id == 0:
-                self.pretrained_module0.load(os.path.join(self.checkpoint_dir, "pretrained_0"))
+                if checkpoint_dir is not None:
+                    self.pretrained_module0.load(checkpoint_dir)
+                else:
+                    self.pretrained_module0.load(os.path.join(self.checkpoint_dir, "pretrained_0"))
             elif module_id == 1:
-                self.pretrained_module1.load(os.path.join(self.checkpoint_dir, "pretrained_1"))
+                if checkpoint_dir is not None:
+                    self.pretrained_module1.load(checkpoint_dir)
+                else:
+                    self.pretrained_module1.load(os.path.join(self.checkpoint_dir, "pretrained_1"))
             else:
                 raise ValueError(f"Invalid module id. Expect 0 or 1, get {module_id}.")
         except Exception as e:
             raise e
+        else:
+            print(f"Pretrained module {module_id} is successfully loaded.")
 
     def get_hard_label(self, image):
         self.pretrained_module0.eval()
@@ -219,7 +245,13 @@ class CoTrainingModule(nn.Module):
         else:
             raise ValueError("Invalid net id.")
 
-    def update(self, x, y_hat, y, lbd_rampup=1):
+    def update(
+        self,
+        x: TensorType["N", "C", "H", "W", "D"],
+        y_hat: TensorType["N", 1, "H", "W", "D"],
+        y: TensorType["N", 1, "H", "W", "D"],
+        lbd_rampup: float = 1,
+    ):
         self.optimizer.zero_grad()
 
         # Parameters
@@ -241,30 +273,26 @@ class CoTrainingModule(nn.Module):
         soft_loss2 = self.soft_loss(self.net2(x), self.Enet1(x), y)
 
         # total loss and back-propagation
-        total_focal = lbd_focal * (focal_loss1 + focal_loss2)
-        total_dice = lbd_dice * (dice_loss1 + dice_loss2)
-        total_soft = lbd_rampup * lbd_soft * (soft_loss1 + soft_loss2)
-        total_loss = total_focal + total_dice + total_soft
-        # total_loss = (
-        #     lbd_focal * (focal_loss1 + focal_loss2)
-        #     + lbd_dice * (dice_loss1 + dice_loss2)
-        #     + lbd_rampup * lbd_soft * (soft_loss1 + soft_loss2)
-        # )
+        total_focal = focal_loss1 + focal_loss2
+        total_dice = dice_loss1 + dice_loss2
+        total_soft = soft_loss1 + soft_loss2
+        total_loss = lbd_focal * total_focal + lbd_dice * total_dice + lbd_rampup * lbd_soft * total_soft
         total_loss.backward()
         self.optimizer.step()
-        return total_focal.item(), total_dice.item(), total_soft.item()
-        return total_loss.item()
+        return total_focal.item(), total_dice.item(), total_soft.item(), total_loss.item()
 
-    def inference(self, x, roi_size=(96, 96, 96), sw_batch_size=2):
+    def inference(
+        self, x: TensorType["N", "C", "H", "W", "D"], roi_size: Tuple[int] = (96, 96, 96), sw_batch_size: int = 2
+    ):
         # Using sliding windows
         self.eval()
         return sliding_window_inference(x, roi_size, sw_batch_size, self.forward)
 
-    def save(self, checkpoint_dir):
+    def save(self, checkpoint_dir: str):
         torch.save(self.net1.state_dict(), os.path.join(checkpoint_dir, "net1.pth"))
         torch.save(self.net2.state_dict(), os.path.join(checkpoint_dir, "net2.pth"))
 
-    def load(self, checkpoint_dir):
+    def load(self, checkpoint_dir: str):
         try:
             self.net1.load_state_dict(torch.load(os.path.join(checkpoint_dir, "net1.pth")))
             self.net2.load_state_dict(torch.load(os.path.join(checkpoint_dir, "net2.pth")))
@@ -292,6 +320,7 @@ class CoTrainingTrainer:
         eval_step: int = 100,
         checkpoint_dir: str = "./checkpoints/",
         device: Literal["cuda", "cpu"] = "cuda",
+        pretrained_dir: str = None,
     ):
         self.num_classes = num_classes
         self.max_iter = max_iter
@@ -305,7 +334,7 @@ class CoTrainingTrainer:
             max_iter=max_iter,
             metric=DiceMetric(),
             eval_step=100,
-            checkpoint_dir=checkpoint_dir,
+            checkpoint_dir=pretrained_dir if pretrained_dir else checkpoint_dir,
             device=device,
         )
         self.postprocess = {
@@ -317,8 +346,8 @@ class CoTrainingTrainer:
     def show_training_info(self, module, train_dataloader, val_dataloader):
         print("--------")
         print("Device:", self.device)  # device is a global variable (not an argument of cli)
-        print("# of Training Samples:", len(train_dataloader))
-        print("# of Validation Samples:", len(val_dataloader))
+        print("# of Training Samples:", {"ct": len(train_dataloader[0]), "mr": len(train_dataloader[1])})
+        print("# of Validation Samples:", {"ct": len(val_dataloader[0]), "mr": len(val_dataloader[1])})
         print("Max iteration:", self.max_iter, f"steps (validates per {self.eval_step} steps)")
         print("Checkpoint directory:", self.checkpoint_dir)
         print("Evaluation metric:", self.metric.__class__.__name__)
@@ -339,26 +368,33 @@ class CoTrainingTrainer:
 
     def cotrain_multi_organ(self, module, train_dataloader, val_dataloader):
         best_metric = 0
-        train_dataloader = chain(*train_dataloader)  # Concatenate two generators (dataloaders) into one
+        train_iterator = chain(*train_dataloader)  # Concatenate two iterables (dataloaders) into one
         train_pbar = tqdm(range(self.max_iter), dynamic_ncols=True)
         writer = SummaryWriter(log_dir=self.checkpoint_dir)
         writer.add_scalar(f"train/{self.metric.__class__.__name__}", 0, 0)  # validation metric starts from zero
 
-        for step in range(self.max_iter):
+        for step in train_pbar:
             module.train()
             # Train
-            batch = next(iter(train_dataloader))
+            try:
+                batch = next(train_iterator)
+            except StopIteration:
+                train_iterator = chain(*train_dataloader)
+                batch = next(train_iterator)
             image, mask = batch["image"].to(self.device), batch["label"].to(self.device)
             mask_hat = self.pretrained_modules.get_hard_label(image)
             # There is no detail description about how lambda_rampup is gradually increased during training,
             # so I apply a similar increasing strategy as the I do to the GRL weight.
             p = float(step) / self.max_iter
             q = 2.0 / (1.0 + np.exp(-10 * p)) - 1
-            focal, dice, soft = module.update(x=image, y_hat=mask_hat, y=mask, lbd_rampup=q)
+            focal, dice, soft, total = module.update(x=image, y_hat=mask_hat, y=mask, lbd_rampup=q)
             train_pbar.set_description(
-                f"Training ({step+1} / {self.max_iter} Steps) (focal={focal:2.5f}, dice={dice:2.5f}, soft={soft:2.5f})"
+                f"Training ({step+1} / {self.max_iter} Steps) (focal={focal:.4e}, dice={dice:.4e}, soft={soft:.4e}, total={total:.4e})"
             )
-            writer.add_scalar(f"train/loss", (focal + dice + soft), step)
+            writer.add_scalar(f"train/focal_loss", focal, step)
+            writer.add_scalar(f"train/dice_loss", dice, step)
+            writer.add_scalar(f"train/soft_loss", soft, step)
+            writer.add_scalar(f"train/total_loss", total, step)
 
             # Validation
             if (step + 1) % self.eval_step == 0 or (step + 1) == self.max_iter:
@@ -372,7 +408,7 @@ class CoTrainingTrainer:
 
     def get_organ_pixels(self, dataloader):
         data_class = dataloader[0].dataset.dataset.__class__
-        target_path = dataloader[0].dataset.dataset.target_path + dataloader[1].dataset.dataset.target_path
+        target_path = set(get_target_path(dataloader[0]) + get_target_path(dataloader[1]))
         excluded_classes = getattr(data_class, "excluded_classes", None)
         relabelling = getattr(data_class, "relabelling", None)
 
@@ -388,11 +424,23 @@ class CoTrainingTrainer:
 
         temp_dataset = Dataset(data=[{"label": p} for p in target_path], transform=Compose(transforms))
         organ_pixel_count = torch.zeros(self.num_classes).to(self.device)
-        for d in tqdm(temp_dataset):
+        for d in tqdm(temp_dataset, desc="Counting pixels of each organ ..."):
             organ_pixel_count += torch.bincount(torch.flatten(d["label"]))
         return organ_pixel_count
 
-    def train(self, module, train_dataloader, val_dataloader, not_pretrained=[0, 1]):
+    def train(self, module, train_dataloader, val_dataloader, load_pretrained: Optional[Union[list, dict]] = None):
+        ## Load or pretrain modules
+        for p_id in [0, 1]:
+            if isinstance(load_pretrained, dict) and p_id in load_pretrained.keys():
+                self.pretrained_modules.load(p_id, load_pretrained[p_id])
+            elif isinstance(load_pretrained, (list, tuple)) and p_id in load_pretrained:
+                self.pretrained_modules.load(p_id)
+            else:
+                self.pretrain_single_organ(p_id, train_dataloader[p_id], val_dataloader[p_id])
+
+        ## Train with cotraining module
+        self.show_training_info(module, train_dataloader, val_dataloader)
+        # Configure focal loss in cotraining module
         w = self.get_organ_pixels(train_dataloader)
         w_inv = w[1:] ** (-1)
         focal_alpha = w_inv / torch.sum(w_inv)
@@ -402,15 +450,16 @@ class CoTrainingTrainer:
             gamma=2,
             weight=focal_alpha,
         )
-        for i in not_pretrained:
-            self.pretrain_single_organ(i, train_dataloader[i], val_dataloader[i])
-        self.show_training_info(module, train_dataloader, val_dataloader)
         self.cotrain_multi_organ(module, train_dataloader, val_dataloader)
 
     def validation(self, module, dataloader, global_step=None, **kwargs):
         module.eval()
         val_metrics = []
-        val_pbar = tqdm(chain(*dataloader), dynamic_ncols=True)
+        val_pbar = tqdm(
+            iterable=chain(*dataloader),
+            total=sum([len(d) for d in dataloader]),
+            dynamic_ncols=True,
+        )
         metric_name = self.metric.__class__.__name__
         train_val_desc = "Validate ({} Steps) ({}={:2.5f})"  # progress bar description used during training
         simple_val_desc = "Validate ({}={:2.5f})"  # progress bar description used when the network is tested
@@ -456,12 +505,13 @@ class CoTrainingInitializer:
         return module
 
     @staticmethod
-    def init_trainer(num_classes, max_iter, eval_step, checkpoint_dir, device):
+    def init_trainer(num_classes, max_iter, eval_step, checkpoint_dir, device, pretrained_dir=None):
         trainer = CoTrainingTrainer(
             num_classes=num_classes,
             max_iter=max_iter,
             eval_step=eval_step,
             checkpoint_dir=checkpoint_dir,
             device=device,
+            pretrained_dir=pretrained_dir,
         )
         return trainer
