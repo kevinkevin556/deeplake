@@ -17,66 +17,135 @@ from torch import nn, ones, zeros
 from torch.nn import BCEWithLogitsLoss
 from torch.optim import SGD, Adam, AdamW
 from torch.utils.tensorboard import SummaryWriter
+from torchtyping import TensorType
 from tqdm import tqdm
 
-from networks.uxnet3d.network_backbone import UXNET
-from segmentation import SegmentationModule
+
+# Type Annotation
+class NCHWD(TensorType):
+    def __init__(self):
+        super().__init__()
+        super().__class_getitem__(["N", "C", "H", "W", "D"])
 
 
+class N1HWD:
+    def __init__(self):
+        super().__init__()
+        super().__class_getitem__(["N", 1, "H", "W", "D"])
+
+
+class Nchwd(TensorType):
+    def __init__(self):
+        super().__init__()
+        super().__class_getitem__(["N", "C1", "H1", "W1", "D1"])
+
+
+class N1hwd:
+    def __init__(self):
+        super().__init__()
+        super().__class_getitem__(["N", 1, "H1", "W1", "D1"])
+
+
+# Utils
+def map_supervision_signal(
+    logit: TensorType["NCHWD"],
+    bg: list,
+):
+    # A modified vesion of (3) in Feng et al. (2021) which
+    # requires the input logit to contain the exact number of
+    # channels as the number of clasees in the fully-annotated
+    # dataset.
+    q: NCHWD = F.softmax(logit, dim=1)
+    q[:, bg, ...] = 0
+    ch_sum: N1HWD = torch.sum(q, dim=1, keepdim=True)
+    q_hat: NCHWD = q / ch_sum
+    return q_hat
+
+
+# Modules
 class MSKDModule(nn.Module):
-    def __init__(self, num_classes):
+    def __init__(self, num_classes: int, background: tuple):
         super.__init__()
         self.num_classes = num_classes
+        self.background0, self.background1 = background
 
         self.teacher0 = BasicUNet(in_channels=1, out_channels=num_classes)
         self.teacher1 = BasicUNet(in_channels=1, out_channels=num_classes)
         self.student = BasicUNet(in_channels=1, out_channels=num_classes)
-        self.kl_loss = nn.KLDivLoss(reduction="None")
+        self.kl_loss = nn.KLDivLoss(reduction="none")
         self.optimizer = Adam(self.student.parameters(), lr=0.001)
+
+        self.feat_stud = None
+        self.feat0 = None
+        self.feat1 = None
+
+        # The hook is configured based on the BasicUNet Architecture
+        self.teacher0.upcat_1.convs.conv_1.register_hook(self.get_activation("teacher0"))
+        self.teacher1.upcat_1.convs.conv_1.register_hook(self.get_activation("teacher1"))
+        self.student.upcat_1.convs.conv_1.register_hook(self.get_activation("student"))
+
+    def get_activation(self, net: str):
+        def hook(model, input, output):
+            if net == "teacher0":
+                self.feat0 = output
+            elif net == "teacher1":
+                self.feat1 = output
+            elif net == "student":
+                self.feat_stud = output
+            else:
+                raise ValueError("Invalid net name.")
+
+        return hook
 
     def forward(self, x):
         return self.student(x)
 
     def update(self, x):
-        self.optimizer.zero_grad()
         bg0 = self.background0
         bg1 = self.background1
         lbd1 = self.lambda_background
         lbd2 = self.lambda_feature
 
         # Logit-wise supervision
-        logit_stud = self.student(x)
-        prob_stud = F.softmax(logit_stud)
-        # teacher 0 & teacher 1
-        logit0, logit1 = self.teacher0(x), self.teacher1(x)
-        k0 = torch.argmax(logit0, dim=1, keepdim=True)
-        k1 = torch.argmax(logit1, dim=1, keepdim=True)
-        M0, M1 = (k0 > 0) * 1, (k1 > 0) * 1
-        prob0, prob1 = F.softmax(logit0), F.softmax(logit1)
-        prob0[:, bg0, :, :, :] = 0
-        prob1[:, bg1, :, :, :] = 0
-        prob0, prob1 = F.softmax(logit0), F.softmax(logit1)
-        logit_loss0 = torch.mean(self.kl_loss(prob0, torch.sum(prob_stud * one_hot(k0), dim=1)) * M0)
-        logit_loss1 = torch.mean(self.kl_loss(prob1, torch.sum(prob_stud * one_hot(k1), dim=1)) * M1)
+        logit_stud: NCHWD = self.student(x)
+        log_prob_stud: NCHWD = F.log_softmax(logit_stud, dim=1)
+        n, c, h, w, d = logit_stud.shape
+
+        ## teacher 0 & teacher 1
+        logit0: NCHWD = self.teacher0(x)
+        prob0: NCHWD = map_supervision_signal(logit0, bg0)
+        M0: N1HWD = (torch.argmax(prob0, dim=1, keepdim=True) > 0) * 1
+        logit_loss0: float = torch.sum(self.kl_loss(log_prob_stud, prob0) * M0) / (n * h * w * d)
+
+        logit1: NCHWD = self.teacher1(x)
+        prob1: NCHWD = map_supervision_signal(logit1, bg1)
+        M1: N1HWD = (torch.argmax(prob1, dim=1, keepdim=True) > 0) * 1
+        logit_loss1: float = torch.sum(self.kl_loss(log_prob_stud, prob1) * M1) / (n * h * w * d)
+
         logit_loss = logit_loss0 + logit_loss1
-        # background
-        Mb = (1 - M0) * (1 - M1)
-        prob_b = (prob0 + prob1) / 2
-        logit_loss_b = torch.mean(
-            self.kl_loss(prob_b, torch.sum(prob_stud * (1 - one_hot(k0)) * (1 - one_hot(k1)), dim=1)) * Mb
-        )
+
+        ## background
+        Mb: N1HWD = (1 - M0) * (1 - M1)
+        prob_b: NCHWD = (prob0 + prob1) / 2
+        logit_loss_b: float = torch.sum(self.kl_loss(log_prob_stud, prob_b) * Mb) / (n * h * w * d)
 
         # Feature-wise supervision (l=1 in decoder)
-        feat_stud = torch.sort(None, dim=1)  # TODO
-        M0_layer = F.max_pool3d(M0, kernel_size=2)
-        feat0 = torch.sort(None, dim=1)  # TODO
-        feature_loss0 = torch.mean(self.kl_loss(feat0, feat_stud) * M0_layer)
-        M1_layer = F.max_pool3d(M1, kernel_size=2)
-        feat1 = torch.sort(None, dim=1)  # TODO
-        feature_loss1 = torch.mean(self.kl_loss(feat1, feat_stud) * M1_layer)
-        feature_loss = feature_loss0 + feature_loss1
+        feat_stud: Nchwd = torch.sort(self.feat_stud, dim=1)
+        n, c1, h1, w1, d1 = feat_stud.shape
 
+        M0_layer: N1hwd = F.max_pool3d(M0, kernel_size=2)
+        feat0: Nchwd = torch.sort(self.feat0, dim=1)
+        feature_loss0: float = torch.sum(self.kl_loss(torch.log(feat_stud), feat0) * M0_layer) / (n * h1 * w1 * d1)
+
+        M1_layer: N1hwd = F.max_pool3d(M1, kernel_size=2)
+        feat1: Nchwd = torch.sort(feat1, dim=1)
+        feature_loss1: float = torch.sum(self.kl_loss(torch.log(feat_stud), feat1) * M1_layer) / (n * h1 * w1 * d1)
+
+        feature_loss = feature_loss0 + feature_loss1
         total_loss = logit_loss + lbd1 * logit_loss_b + lbd2 * feature_loss
+
+        # Backpropagation
+        self.optimizer.zero_grad()
         total_loss.backward()
         self.optimizer.step()
         return total_loss.item()
@@ -87,9 +156,9 @@ class MSKDModule(nn.Module):
         return sliding_window_inference(x, roi_size, sw_batch_size, self.forward)
 
     def save(self, checkpoint_dir):
-        torch.save(self.teacher0.state_dict(), os.path.join(checkpoint_dir, "ct_teacher_state.pth"))
-        torch.save(self.teacher1.state_dict(), os.path.join(checkpoint_dir, "mr_teacher_state.pth"))
-        torch.save(self.student.state_dict(), os.path.join(checkpoint_dir, "student_state.pth"))
+        torch.save(self.teacher0.state_dict(), os.path.join(checkpoint_dir, "teacher0.pth"))
+        torch.save(self.teacher1.state_dict(), os.path.join(checkpoint_dir, "teacher1.pth"))
+        torch.save(self.student.state_dict(), os.path.join(checkpoint_dir, "student.pth"))
 
     def load(self, checkpoint_dir):
         try:
