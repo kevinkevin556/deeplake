@@ -88,7 +88,7 @@ class SoftLoss(nn.Module):
         lab_logits.requires_grad = False
         y.requires_grad = False
         Ty = (y == 0) * 1  # region mask: dim = (N, 1, H, W, D)
-        loss = -torch.sum(F.softmax(lab_logits, dim=1) * F.log_softmax(pred_logits, dim=1) * Ty)
+        loss = -torch.sum(F.softmax(lab_logits, dim=1) * F.log_softmax(pred_logits, dim=1) * Ty) / torch.sum(Ty)
         return loss
 
 
@@ -170,18 +170,18 @@ class PretrainedModules:
         else:
             print(f"Pretrained module {module_id} is successfully loaded.")
 
-    def get_hard_label(self, image):
+    def get_hard_label(self, image, return_label=0):
         self.pretrained_module0.eval()
         self.pretrained_module1.eval()
         with torch.no_grad():
             label0 = torch.argmax(self.pretrained_module0(image), dim=1, keepdim=True)
             label1 = torch.argmax(self.pretrained_module1(image), dim=1, keepdim=True)
-            # Because we do not know which label is better
-            # randomly pick one as the base mask and fill background pixels with the other
-            if random.randint(0, 1) == 0:
+            if return_label == 0:
                 return label0 + (label0 == 0) * 1 * label1
-            else:
+            elif return_label == 1:
                 return label1 + (label1 == 0) * 1 * label0
+            else:
+                raise ValueError(f"Invalid value for return_label. Expect {0, 1}, got {return_label}")
 
 
 class CoTrainingModule(nn.Module):
@@ -216,7 +216,7 @@ class CoTrainingModule(nn.Module):
         for param in self.Enet2.parameters():
             param.requires_grad = False
 
-        # # Optimizer
+        # Optimizer
         params = list(self.net1.parameters()) + list(self.net2.parameters())
         self.lr = lr
         if optimizer != "SGD":
@@ -368,21 +368,31 @@ class CoTrainingTrainer:
 
     def cotrain_multi_organ(self, module, train_dataloader, val_dataloader):
         best_metric = 0
-        train_iterator = chain(*train_dataloader)  # Concatenate two iterables (dataloaders) into one
         train_pbar = tqdm(range(self.max_iter), dynamic_ncols=True)
         writer = SummaryWriter(log_dir=self.checkpoint_dir)
-        writer.add_scalar(f"train/{self.metric.__class__.__name__}", 0, 0)  # validation metric starts from zero
+        writer.add_scalar(f"train/{self.metric.__class__.__name__}", best_metric, 0)
 
+        iter_count = 0
+        train_iterator = chain(*train_dataloader)  # Concatenate two iterables (dataloaders) into one
         for step in train_pbar:
+            ## Train
             module.train()
-            # Train
             try:
                 batch = next(train_iterator)
             except StopIteration:
+                # If the iterator runs out of data, create a new one.
+                iter_count = 0
                 train_iterator = chain(*train_dataloader)
                 batch = next(train_iterator)
+            # If the counter of iterator is smaller than the length of dataloader0
+            # it means the sample is from the first dataset.
+            # The hard label prediction should be obatained mainly from the first pretrained model.
             image, mask = batch["image"].to(self.device), batch["label"].to(self.device)
-            mask_hat = self.pretrained_modules.get_hard_label(image)
+            mask_hat = self.pretrained_modules.get_hard_label(
+                image,
+                return_label=(0 if iter_count < len(train_dataloader[0]) else 1),
+            )
+            iter_count += 1
             # There is no detail description about how lambda_rampup is gradually increased during training,
             # so I apply a similar increasing strategy as the I do to the GRL weight.
             p = float(step) / self.max_iter
@@ -395,10 +405,10 @@ class CoTrainingTrainer:
             writer.add_scalar(f"train/dice_loss", dice, step)
             writer.add_scalar(f"train/soft_loss", soft, step)
             writer.add_scalar(f"train/total_loss", total, step)
-
-            # Validation
+            ## Validation
             if (step + 1) % self.eval_step == 0 or (step + 1) == self.max_iter:
                 val_metric = self.validation(module, val_dataloader, step)
+                writer.add_scalar(f"train/{self.metric.__class__.__name__}", val_metric, step)
                 if val_metric > best_metric:
                     module.save(self.checkpoint_dir)
                     tqdm.write(f"Model saved! Validation: (New) {val_metric:2.7f} > (Old) {best_metric:2.7f}")
@@ -407,11 +417,12 @@ class CoTrainingTrainer:
                     tqdm.write(f"No improvement. Validation: (New) {val_metric:2.7f} <= (Old) {best_metric:2.7f}")
 
     def get_organ_pixels(self, dataloader):
+        # Obtain dataset info
         data_class = dataloader[0].dataset.dataset.__class__
         target_path = set(get_target_path(dataloader[0]) + get_target_path(dataloader[1]))
         excluded_classes = getattr(data_class, "excluded_classes", None)
         relabelling = getattr(data_class, "relabelling", None)
-
+        # Create loading transform
         transforms = [
             LoadImaged(keys=["label"], image_only=True, dtype=np.uint8),
             AddChanneld(keys=["label"]),
@@ -421,7 +432,7 @@ class CoTrainingTrainer:
         if relabelling:
             transforms.append(ApplyMaskMappingd(keys=["label"], mask_mapping=relabelling))
         transforms.append(ToTensord(keys=["label"], dtype=torch.uint8, device=self.device))
-
+        # Create dataset to read labels and count pixels for each organ
         temp_dataset = Dataset(data=[{"label": p} for p in target_path], transform=Compose(transforms))
         organ_pixel_count = torch.zeros(self.num_classes).to(self.device)
         for d in tqdm(temp_dataset, desc="Counting pixels of each organ ..."):
@@ -500,8 +511,8 @@ class CoTrainingInitializer:
         return train_dataloaders, val_dataloaders, test_dataloaders
 
     @staticmethod
-    def init_module(loss, optim, lr, dataset, modality, masked, device):
-        module = CoTrainingModule(num_classes=dataset["num_classes"], lr=lr)
+    def init_module(loss, optim, lr, dataset, modality, masked, device, **kwargs):
+        module = CoTrainingModule(num_classes=dataset["num_classes"], lr=lr, **kwargs)
         return module
 
     @staticmethod
