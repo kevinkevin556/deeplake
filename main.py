@@ -133,6 +133,15 @@ def get_args():
     return args
 
 
+def get_data_len(dataset):
+    if dataset:
+        return len(dataset)
+    elif dataset is None:
+        return 0
+    else:
+        raise ValueError(f"Expect Dataset or None. Got {dataset}.")
+
+
 def get_datasets(
     data_info: dict,
     modality: Literal["ct", "mr", "ct+mr"],
@@ -219,6 +228,10 @@ def get_datasets(
     else:
         raise ValueError(f"Invalid holdout_ratio. Expect 0 <= holdout_ratio < 1, get {holdout_ratio}.")
 
+    print("** # of Training data =", {"ct": get_data_len(ct_train_dataset), "mr": get_data_len(mr_train_dataset)})
+    print("** # of Validation data =", {"ct": get_data_len(ct_val_dataset), "mr": get_data_len(mr_val_dataset)})
+    print("** # of Testing data =", {"ct": get_data_len(ct_test_dataset), "mr": get_data_len(mr_test_dataset)})
+
     return (
         (ct_train_dataset, mr_train_dataset),
         (ct_val_dataset, mr_val_dataset),
@@ -281,7 +294,16 @@ def main():
     )
 
     ## Initialize module
-    module = mod_init.init_module(loss, optim, lr, dataset, modality, partially_labelled, device)
+    module = mod_init.init_module(
+        out_channels=data_info["num_classes"],
+        loss=loss,
+        optim=optim,
+        lr=lr,
+        data_info=data_info,
+        modality=modality,
+        partially_labelled=partially_labelled,
+        device=device,
+    )
     if pretrained:
         print("** Pretrained checkpoint =", pretrained)
         module.load(pretrained)
@@ -295,11 +317,13 @@ def main():
     # create subfolder based on time
     checkpoint_dir = Path(checkpoint_dir) / datetime.now().strftime("%Y%m%d-%H%M%S")
     trainer = mod_init.init_trainer(
-        num_classes=dataset["num_classes"],
+        num_classes=data_info["num_classes"],
         max_iter=max_iter,
         eval_step=eval_step,
         checkpoint_dir=checkpoint_dir,
         device=device,
+        data_info=data_info,
+        partially_labelled=partially_labelled,
     )
 
     print("** Mode =", mode)
@@ -310,7 +334,7 @@ def main():
         with open(Path(trainer.checkpoint_dir) / "json", "w") as f:
             json.dump(vars(args), f, indent=4)
     if mode == "test" or test_dataloader:
-        test_metric = trainer.validation(module, test_dataloader, label="all")
+        test_metric = trainer.validation(module, test_dataloader)
         print("** Test (Final):", test_metric)
     else:
         raise ValueError("Got an invalid input of option --mode.")
