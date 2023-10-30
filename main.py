@@ -73,12 +73,7 @@ datasets = {
 }
 
 
-def split_train_data(
-    data_info: dict,
-    modality: str,
-    bg_mapping: dict,
-    data_config: dict,
-):
+def split_train_data(data_info: dict, modality: str, bg_mapping: dict, data_config: dict, holdout_ratio: float = 0.1):
     _configs = data_config.copy()
     _configs["modality"] = modality
     _data_class = data_info["class"]
@@ -91,9 +86,9 @@ def split_train_data(
     train_dataset = _data_class(stage="train", transform=_train_transforms, mask_mapping=bg_mapping, **_configs)
     val_dataset = _data_class(stage="train", transform=_val_transforms, mask_mapping=bg_mapping, **_configs)
     test_dataset = _data_class(stage="validation", transform=_val_transforms, mask_mapping=None, **_configs)
-    # 10% of the original training data is used as validation set.
-    train_dataset = train_dataset[: -int(len(train_dataset) * 0.1)]
-    val_dataset = val_dataset[-int(len(val_dataset) * 0.1) :]
+    # Default: 10% of the original training data is used as validation set.
+    train_dataset = train_dataset[: -int(len(train_dataset) * holdout_ratio)]
+    val_dataset = val_dataset[-int(len(val_dataset) * holdout_ratio) :]
     return train_dataset, val_dataset, test_dataset
 
 
@@ -103,10 +98,10 @@ def get_args():
     parser.add_argument("--modality", type=str, default="ct", help="Modality type: ct / mr / ct+mr")
     parser.add_argument("--partially_labelled", type=bool, help="If true, train with annotation-masked data")
     parser.add_argument(
-        "--train_data",
-        type=str,
-        required=True,
-        help="Training data: 'all' (train data)) / 'split' (into training & val sets)",
+        "--holdout_ratio",
+        type=float,
+        default=0.1,
+        help="The proportion of training data allocated for validation. The number should be in [0, 1).",
     )
     # Training module hyperparameters
     parser.add_argument("--mode", type=str, default="train", help="Mode: train / test")
@@ -141,9 +136,8 @@ def get_args():
 def get_datasets(
     data_info: dict,
     modality: Literal["ct", "mr", "ct+mr"],
-    train_data: Literal["all", "split"],
-    masked: bool,
-    return_modality_dataset: bool,
+    holdout_ratio: float,
+    partially_labelled: bool,
     **data_config,
 ):
     assert "root_dir" in data_config.keys()
@@ -153,77 +147,77 @@ def get_datasets(
 
     print("** Dataset =", data_info["name"])
     print("** Modality =", modality)
-    print("** Training set =", train_data)
+    print("** Validation split ratio =", holdout_ratio)
 
     data_class = data_info["class"]
-    bg = data_info["bg"]
-    fg = data_info["fg"]
+    background = data_info["bg"]
+    foreground = data_info["fg"]
 
-    if train_data == "all":
-        if not masked:
-            print("** Foreground =", list(range(1, data_class.num_classes)))
-            train_dataset = data_class(stage="train", mask_mapping=None, **data_config)
-            val_dataset = data_class(stage="validation", mask_mapping=None, **data_config)
-            test_dataset = None
-        else:
-            # Annotation masked
-            print("** Annotation masked = True")
-            if modality in ["ct", "mr"]:
-                print("** Foreground =", fg[modality])
-                train_dataset = data_class(stage="train", mask_mapping=bg[modality], **data_config)
-                val_dataset = data_class(stage="validation", mask_mapping=bg[modality], **data_config)
-                test_dataset = None
-            else:
-                print("** Foreground =\n  - ct:", fg["ct"], "\n  - mr:", fg["mr"])
-                # Read ct and mr data respectively
-                data_config["modality"] = "ct"
-                ct_train_dataset = data_class(stage="train", mask_mapping=bg["ct"], **data_config)
-                ct_val_dataset = data_class(stage="validation", mask_mapping=bg["ct"], **data_config)
-                data_config["modality"] = "mr"
-                mr_train_dataset = data_class(stage="train", mask_mapping=bg["mr"], **data_config)
-                mr_val_dataset = data_class(stage="validation", mask_mapping=bg["mr"], **data_config)
-                # Combine ct and mr data into training and validation set
-                train_dataset = ConcatDataset([ct_train_dataset, mr_train_dataset])
-                val_dataset = ConcatDataset([ct_val_dataset, mr_val_dataset])
-                test_dataset = None
-    elif train_data == "split":
+    if partially_labelled:
+        print("** Partially Labelled = True")
         if modality in ["ct", "mr"]:
-            if masked:
-                print("** Annotation masked = True")
-                print("** Foreground =", fg[modality])
-                bg_mapping = bg[modality]
-            else:
-                print("** Foreground =", list(range(1, data_class.num_classes)))
-                bg_mapping = None
-            train_dataset, val_dataset, test_dataset = split_train_data(data_info, modality, bg_mapping, data_config)
+            print("** Foreground =", foreground[modality])
+            mapping = {modality: background[modality]}
         else:
-            if masked:
-                print("** Annotation masked = True")
-                print("** Foreground =\n  - ct:", fg["ct"], "\n  - mr:", fg["mr"])
-                ct_bg_mapping, mr_bg_mapping = bg["ct"], bg["mr"]
-            else:
-                print("** Foreground =", list(range(1, data_class.num_classes)))
-                ct_bg_mapping, mr_bg_mapping = None, None
+            print("** Foreground =\n  - ct:", foreground["ct"], "\n  - mr:", foreground["mr"])
+            mapping = {"ct": background["ct"], "mr": background["mr"]}
+    else:
+        print("** Foreground =", list(range(1, data_class.num_classes)))
+        mapping = {}
 
+    if holdout_ratio == 0:
+        if modality == "ct":
+            ct_train_dataset = data_class(stage="train", mask_mapping=mapping.get("ct", None), **data_config)
+            ct_val_dataset = data_class(stage="validation", mask_mapping=mapping.get("ct", None), **data_config)
+            ct_test_dataset = None
+            mr_train_dataset, mr_val_dataset, mr_test_dataset = None, None, None
+        elif modality == "mr":
+            ct_train_dataset, ct_val_dataset, ct_test_dataset = None, None, None
+            mr_train_dataset = data_class(stage="train", mask_mapping=mapping.get("mr", None), **data_config)
+            mr_val_dataset = data_class(stage="validation", mask_mapping=mapping.get("mr", None), **data_config)
+            mr_test_dataset = None
+        else:
+            data_config["modality"] = "ct"
+            ct_train_dataset = data_class(stage="train", mask_mapping=mapping.get("ct", None), **data_config)
+            ct_val_dataset = data_class(stage="validation", mask_mapping=mapping.get("ct", None), **data_config)
+            ct_test_dataset = None
+            data_config["modality"] = "mr"
+            mr_train_dataset = data_class(stage="train", mask_mapping=mapping.get("mr", None), **data_config)
+            mr_val_dataset = data_class(stage="validation", mask_mapping=mapping.get("mr", None), **data_config)
+            mr_test_dataset = None
+
+        if modality == "ct+mr:balance":
+            train_mul = len(ct_train_dataset) // len(mr_train_dataset)
+            val_mul = len(ct_val_dataset) // len(mr_val_dataset)
+            mr_train_dataset = ConcatDataset([mr_train_dataset] * train_mul)
+            mr_val_dataset = ConcatDataset([mr_val_dataset] * val_mul)
+
+    elif 0 < holdout_ratio < 1:
+        if modality == "ct":
             ct_train_dataset, ct_val_dataset, ct_test_dataset = split_train_data(
-                data_info, "ct", ct_bg_mapping, data_config
+                data_info, modality, mapping.get("ct", None), data_config
+            )
+            mr_train_dataset, mr_val_dataset, mr_test_dataset = None, None, None
+        elif modality == "mr":
+            ct_train_dataset, ct_val_dataset, ct_test_dataset = None, None, None
+            mr_train_dataset, mr_val_dataset, mr_test_dataset = split_train_data(
+                data_info, modality, mapping.get("mr", None), data_config
+            )
+        else:
+            ct_train_dataset, ct_val_dataset, ct_test_dataset = split_train_data(
+                data_info, "ct", mapping.get("ct", None), data_config
             )
             mr_train_dataset, mr_val_dataset, mr_test_dataset = split_train_data(
-                data_info, "mr", mr_bg_mapping, data_config
+                data_info, "mr", mapping.get("mr", None), data_config
             )
 
-            if modality == "ct+mr:balance":
-                train_mul = len(ct_train_dataset) // len(mr_train_dataset)
-                val_mul = len(ct_val_dataset) // len(mr_val_dataset)
-                mr_train_dataset = ConcatDataset([mr_train_dataset] * train_mul)
-                mr_val_dataset = ConcatDataset([mr_val_dataset] * val_mul)
-
-            train_dataset = ConcatDataset([ct_train_dataset, mr_train_dataset])
-            val_dataset = ConcatDataset([ct_val_dataset, mr_val_dataset])
-            test_dataset = ConcatDataset([ct_test_dataset, mr_test_dataset])
-
+        if modality == "ct+mr:balance":
+            train_mul = len(ct_train_dataset) // len(mr_train_dataset)
+            val_mul = len(ct_val_dataset) // len(mr_val_dataset)
+            mr_train_dataset = ConcatDataset([mr_train_dataset] * train_mul)
+            mr_val_dataset = ConcatDataset([mr_val_dataset] * val_mul)
     else:
-        raise ValueError("Got an invalid input of option --train_data.")
+        raise ValueError(f"Invalid holdout_ratio. Expect 0 <= holdout_ratio < 1, get {holdout_ratio}.")
 
     return (
         (ct_train_dataset, mr_train_dataset),
@@ -245,7 +239,7 @@ def main():
     dataset = args.dataset
     modality = args.modality  # {"ct", "mr", "ct+mr"}
     partially_labelled = args.partially_labelled  # {True, False}
-    train_data = args.train_data  # {"all", "split"}
+    holdout_ratio = args.holdout_ratio
     mode = args.mode  # {"train", "test"}
     # Module
     module_name = args.module  # {"segmentation", "dann"}
@@ -264,9 +258,6 @@ def main():
 
     ## Configurations: data_info and mod_init
     data_info = datasets[dataset]
-    return_modality_dataset = modules[module_name][
-        "return_modality_dataset"
-    ]  # True if 'ct' and 'mr' datasets should be provided separately.
     mod_init = modules[module_name]["initializer"]
 
     ## Whether train without randomness
@@ -278,9 +269,8 @@ def main():
     train_dataset, val_dataset, test_dataset = get_datasets(
         data_info=data_info,
         modality=modality,
-        train_data=train_data,
-        masked=partially_labelled,
-        return_modality_dataset=return_modality_dataset,
+        holdout_ratio=holdout_ratio,
+        partially_labelled=partially_labelled,
         root_dir=root,
         cache_rate=cache_rate,
         num_workers=num_workers,
