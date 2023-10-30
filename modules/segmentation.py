@@ -209,13 +209,15 @@ class SegmentationTrainer:
             batch = next(iter(train_dataloader))
             images = batch["image"].to(self.device)
             masks = batch["label"].to(self.device)
-            modality_label = batch["modality"]
+            modality_label = batch["modality"][0]
             if self.partially_labelled:
                 modality = 0 if modality_label == "ct" else 1
             else:
                 modality = None
             loss = module.update(images, masks, modality)
-            train_pbar.set_description(f"Training ({step+1} / {self.max_iter} Steps) (loss={loss:2.5f})")
+            train_pbar.set_description(
+                f"Training ({step+1} / {self.max_iter} Steps) ({modality_label}) (loss={loss:2.5f})"
+            )
             writer.add_scalar(f"train/{module.criterion.__class__.__name__}", loss, step)
             # Validation
             if ((step + 1) % self.eval_step == 0) or (step == self.max_iter - 1):
