@@ -10,7 +10,6 @@ from monai.data import DataLoader, decollate_batch
 from monai.inferers import sliding_window_inference
 from monai.losses import DiceCELoss
 from monai.metrics import DiceMetric, Metric
-from monai.transforms import AsDiscrete
 from torch import nn
 from torch.nn.modules.loss import _Loss
 from torch.optim import SGD, Adam, AdamW
