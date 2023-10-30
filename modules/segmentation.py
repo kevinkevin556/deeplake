@@ -10,6 +10,7 @@ from monai.data import DataLoader, decollate_batch
 from monai.inferers import sliding_window_inference
 from monai.losses import DiceCELoss
 from monai.metrics import DiceMetric, Metric
+from monai.networks.nets import BasicUNet
 from torch import nn
 from torch.nn.modules.loss import _Loss
 from torch.optim import SGD, Adam, AdamW
@@ -53,10 +54,12 @@ class SegmentationModule(nn.Module):
         elif (feat_extractor is not None) and (predictor is not None):
             params = list(self.feat_extractor.parameters()) + list(self.predictor.parameters())
         else:
+            self.net = BasicUNet(in_channels=1, out_channels=out_channels, spatial_dims=3)
+            params = self.net.parameters()
             # Default feature extractor and predictor
-            self.feat_extractor = UXNETEncoder(in_chans=1)
-            self.predictor = UXNETDecoder(out_chans=out_channels)
-            params = list(self.feat_extractor.parameters()) + list(self.predictor.parameters())
+            # self.feat_extractor = UXNETEncoder(in_chans=1)
+            # self.predictor = UXNETDecoder(out_chans=out_channels)
+            # params = list(self.feat_extractor.parameters()) + list(self.predictor.parameters())
 
         differentiable_params = [p for p in params if p.requires_grad]
         self.criterion = criterion
