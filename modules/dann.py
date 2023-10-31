@@ -19,6 +19,7 @@ from tqdm import tqdm
 
 from lib.loss.target_adaptive_loss import TargetAdaptiveLoss
 from lib.utils.validation import get_output_and_mask
+from networks.unet.unet3d import BasicUNetDecoder, BasicUNetEncoder
 from networks.uxnet3d.network_backbone import UXNETDecoder, UXNETEncoder
 
 
@@ -56,6 +57,7 @@ class AdversarialLoss(nn.Module):
 class DANNModule(nn.Module):
     def __init__(
         self,
+        out_channels: int,
         num_classes: int,
         ct_foreground: Optional[list] = None,
         mr_foreground: Optional[list] = None,
@@ -72,12 +74,12 @@ class DANNModule(nn.Module):
         self.mr_foreground = mr_foreground
         self.mr_background = list(set(range(1, self.num_classes)) - set(mr_foreground)) if mr_foreground else None
 
-        self.feat_extractor = UXNETEncoder(in_chans=1)
-        self.predictor = UXNETDecoder(out_chans=self.num_classes)
+        self.feat_extractor = BasicUNetEncoder(in_channels=1)
+        self.predictor = BasicUNetDecoder(out_channels=out_channels)
         self.grl = GradientReversalLayer(alpha=1)
         self.dom_classifier = nn.Sequential(
             nn.Flatten(),
-            nn.Linear((h // 16) * (w // 16) * (d // 16) * 768, 512),
+            nn.Linear(55296, 512),
             # nn.Linear(1024, 1024),
             nn.Linear(512, 1),
         )
@@ -164,12 +166,13 @@ class DANNModule(nn.Module):
         print("Module Encoder:", self.feat_extractor.__class__.__name__)
         print("       Decoder:", self.predictor.__class__.__name__)
         print("Optimizer:", self.optimizer.__class__.__name__, f"(lr = {self.lr})")
-        print("Loss function:", {"ct": self.ct_tal.__class__.__name__, "mr": self.mr_tal.__class__.__name__})
+        print("Loss function:", {"ct": self.ct_tal, "mr": self.mr_tal})
 
 
 class DANNTrainer:
     def __init__(
         self,
+        num_classes: int,
         max_iter: int = 10000,
         metric: Metric = DiceMetric(include_background=True, reduction="mean", get_not_nans=False),
         eval_step: int = 100,
@@ -178,6 +181,7 @@ class DANNTrainer:
         data_info: dict = None,
         partially_labelled: bool = False,
     ):
+        self.num_classes = num_classes
         self.max_iter = max_iter
         self.metric = metric
         self.eval_step = eval_step
@@ -208,13 +212,18 @@ class DANNTrainer:
         background = {"ct": module.ct_background, "mr": module.mr_background}
         val_pbar = tqdm(data_iter, total=len(dataloader[0]) + len(dataloader[1]), dynamic_ncols=True)
         metric_name = self.metric.__class__.__name__
-        train_val_desc = "Validate ({} Steps) ({}={:2.5f})"
-        simple_val_desc = "Validate ({}={:2.5f})"
+        train_val_desc = (
+            "Validate ({} Steps) (Partially-labelled:{}) ({}={:2.5f})"  # progress bar description used during training
+        )
+        simple_val_desc = (
+            "Validate (Partially-labelled:{}) ({}={:2.5f})"  # progress bar description used when the network is tested
+        )
+        val_on_partial = self.partially_labelled and (global_step is not None)
         with torch.no_grad():
             for batch in val_pbar:
                 # Infer, decollate data into list of samples, and proprocess both predictions and labels
                 images, masks = batch["image"].to(self.device), batch["label"].to(self.device)
-                modality_label = batch["modality"]
+                modality_label = batch["modality"][0]
                 samples = decollate_batch({"prediction": module.inference(images), "ground_truth": masks})
                 if self.partially_labelled and (global_step is not None):
                     outputs, masks = get_output_and_mask(samples, num_classes, background[modality_label])
@@ -227,9 +236,11 @@ class DANNTrainer:
                 self.metric.reset()
                 # Update progressbar
                 if global_step is not None:
-                    val_pbar.set_description(train_val_desc.format(global_step, metric_name, batch_metric))
+                    val_pbar.set_description(
+                        train_val_desc.format(global_step, val_on_partial, metric_name, batch_metric)
+                    )
                 else:
-                    val_pbar.set_description(simple_val_desc.format(metric_name, batch_metric))
+                    val_pbar.set_description(simple_val_desc.format(val_on_partial, metric_name, batch_metric))
         mean_val_metric = np.mean(val_metrics)
         return mean_val_metric
 
@@ -289,19 +300,35 @@ class DANNInitializer:
         )
 
     @staticmethod
-    def init_module(loss, optim, lr, dataset, modality, masked, device):
-        if loss != "tal" and not masked:
-            module = DANNModule(None, None, optim, lr, dataset.num_classes)
+    def init_module(out_channels, loss, optim, lr, data_info, modality, partially_labelled, device, **kwargs):
+        if loss != "tal":
+            ct_foreground = None
+            mr_foreground = None
         else:
-            module = DANNModule(dataset["fg"]["ct"], dataset["fg"]["mr"], optim, lr, dataset.num_classes)
+            ct_foreground = data_info["fg"]["ct"]
+            mr_foreground = data_info["fg"]["mr"]
+
+        module = DANNModule(
+            out_channels=out_channels,
+            num_classes=data_info["num_classes"],
+            ct_foreground=ct_foreground,
+            mr_foreground=mr_foreground,
+            optimizer=optim,
+            lr=lr,
+            **kwargs,
+        )
+
         return module
 
     @staticmethod
-    def init_trainer(max_iter, eval_step, checkpoint_dir, device):
+    def init_trainer(num_classes, max_iter, eval_step, checkpoint_dir, device, data_info, partially_labelled, **kwargs):
         trainer = DANNTrainer(
+            num_classes=num_classes,
             max_iter=max_iter,
             eval_step=eval_step,
             checkpoint_dir=checkpoint_dir,
             device=device,
+            data_info=data_info,
+            partially_labelled=partially_labelled,
         )
         return trainer
