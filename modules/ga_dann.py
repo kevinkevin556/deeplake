@@ -1,3 +1,4 @@
+import argparse
 import itertools
 import os
 from pathlib import Path
@@ -5,6 +6,7 @@ from typing import Optional
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from monai.data import DataLoader, decollate_batch
 from monai.inferers import sliding_window_inference
 from monai.losses import DiceCELoss
@@ -12,7 +14,6 @@ from monai.metrics import DiceMetric, Metric
 from torch import nn, ones, zeros
 from torch.nn import BCEWithLogitsLoss
 from torch.optim import SGD, Adam, AdamW
-from torch.utils.data import ConcatDataset
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
@@ -53,7 +54,12 @@ class AdversarialLoss(nn.Module):
         return bce(y_pred, y_true)
 
 
-class DANNModule(nn.Module):
+def attention(q, k, v, eps=1e-7):
+    score = F.cosine_similarity(q, k)
+    return v / score
+
+
+class GradAttDANNModule(nn.Module):
     def __init__(
         self,
         out_channels: int,
@@ -77,14 +83,10 @@ class DANNModule(nn.Module):
         self.predictor = BasicUNetDecoder(out_channels=out_channels)
         self.grl = GradientReversalLayer(alpha=1)
         self.dom_classifier = nn.Sequential(
-            nn.Conv3d(256, 128, kernel_size=3, padding=1),
-            nn.MaxPool3d(kernel_size=2),
-            nn.ReLU(),
-            nn.Conv3d(128, 64, kernel_size=3, padding=1),
-            nn.MaxPool3d(kernel_size=2),
-            nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(64, 1),
+            nn.Linear(55296, 512),
+            # nn.Linear(1024, 1024),
+            nn.Linear(512, 1),
         )
 
         # Optimizer
@@ -112,7 +114,7 @@ class DANNModule(nn.Module):
             if self.mr_background is not None
             else DiceCELoss(to_onehot_y=True, softmax=True)
         )
-        self.adv_loss = AdversarialLoss()  # TODO: Replace Adversial loss with BCEloss
+        self.adv_loss = AdversarialLoss()
 
     def forward(self, x, branch=0):
         skip_outputs, feature = self.feat_extractor(x)
@@ -130,41 +132,24 @@ class DANNModule(nn.Module):
         # Predictor branch
         ct_skip_outputs, ct_feature = self.feat_extractor(ct_image)
         ct_output = self.predictor((ct_skip_outputs, ct_feature))
+        ct_seg_loss = self.ct_tal(ct_output, ct_mask)
+        ct_seg_loss.backward(retain_graph=True)
+        ct_grad = self.feat_extractor[-1].weight.grad
+
         mr_skip_outputs, mr_feature = self.feat_extractor(mr_image)
         mr_output = self.predictor((mr_skip_outputs, mr_feature))
-
-        ct_seg_loss = self.ct_tal(ct_output, ct_mask)
         mr_seg_loss = self.mr_tal(mr_output, mr_mask)
+        mr_seg_loss.backward(retain_graph=True)
+        mr_grad = self.feat_extractor[-1].weight.grad
+
         seg_loss = ct_seg_loss + mr_seg_loss
-        seg_loss.backward(retain_graph=True)
 
         # Domain Classifier branch
-        ct_dom_pred_logits = self.dom_classifier(self.grl.apply(ct_feature))
-        mr_dom_pred_logits = self.dom_classifier(self.grl.apply(mr_feature))
+        ct_atten_feat = attention(q=mr_grad, k=ct_grad, v=ct_feature)
+        mr_atten_feat = attention(q=ct_grad, k=mr_grad, v=mr_feature)
+        ct_dom_pred_logits = self.dom_classifier(self.grl.apply(ct_atten_feat))
+        mr_dom_pred_logits = self.dom_classifier(self.grl.apply(mr_atten_feat))
         adv_loss = self.adv_loss(ct_dom_pred_logits, mr_dom_pred_logits)
-        adv_loss.backward()
-
-        self.optimizer.step()
-        return seg_loss.item(), adv_loss.item()
-
-    def updatev2(self, images, masks, mod_equiv, alpha):
-        self.grl.set_alpha(alpha)
-        self.optimizer.zero_grad()
-
-        # Predictor branch
-        ct_skip_outputs, ct_feature = self.feat_extractor(images[0])
-        ct_output = self.predictor((ct_skip_outputs, ct_feature))
-        ct_seg_loss = self.ct_tal(ct_output, masks[0])
-        mr_skip_outputs, mr_feature = self.feat_extractor(images[1])
-        mr_output = self.predictor((mr_skip_outputs, mr_feature))
-        mr_seg_loss = self.mr_tal(mr_output, masks[1])
-        seg_loss = ct_seg_loss + mr_seg_loss
-        seg_loss.backward(retain_graph=True)
-
-        # Domain Classifier branch
-        features = torch.cat([ct_feature, mr_feature], dim=1)
-        pred_modal_equiv = self.dom_classifier(self.grl.apply(features))
-        adv_loss = self.adv_loss(pred_modal_equiv, mod_equiv)
         adv_loss.backward()
 
         self.optimizer.step()
@@ -193,10 +178,9 @@ class DANNModule(nn.Module):
         print("       Decoder:", self.predictor.__class__.__name__)
         print("Optimizer:", self.optimizer.__class__.__name__, f"(lr = {self.lr})")
         print("Loss function:", {"ct": self.ct_tal, "mr": self.mr_tal})
-        print("Discriminate")
 
 
-class DANNTrainer:
+class GradAttDANNTrainer:
     def __init__(
         self,
         num_classes: int,
@@ -281,12 +265,6 @@ class DANNTrainer:
 
         for step in train_pbar:
             module.train()
-            batch1 = next(iter(train_dataloader))
-            batch2 = next(iter(train_dataloader))
-            images = batch1["image"].to(self.device), batch2["image"].to(self.device)
-            masks = batch1["label"].to(self.device), batch2["label"].to(self.device)
-            modality_labels = batch1["modality"] == batch2["modality"]
-
             ct_batch = next(iter(ct_train_dtl))
             mr_batch = next(iter(mr_train_dtl))
             ct_image, ct_mask = ct_batch["image"].to(self.device), ct_batch["label"].to(self.device)
@@ -313,31 +291,24 @@ class DANNTrainer:
                     tqdm.write(f"No improvement. Validation: (New) {val_metric:2.7f} <= (Old) {best_metric:2.7f}")
 
 
-class DANNInitializer:
+class GradAttDANNInitializer:
     @staticmethod
     def init_dataloaders(train_dataset, val_dataset, test_dataset, batch_size, dev):
-        train_dataloader = DataLoader(
-            ConcatDataset(train_dataset), batch_size=batch_size, shuffle=~dev, pin_memory=True
+        ct_train_dataloader = DataLoader(train_dataset[0], batch_size=batch_size, shuffle=~dev, pin_memory=True)
+        ct_val_dataloader = DataLoader(val_dataset[0], batch_size=1, shuffle=False, pin_memory=True)
+        mr_train_dataloader = DataLoader(train_dataset[1], batch_size=batch_size, shuffle=~dev, pin_memory=True)
+        mr_val_dataloader = DataLoader(val_dataset[1], batch_size=1, shuffle=False, pin_memory=True)
+        ct_test_dataloader = (
+            DataLoader(test_dataset[0], batch_size=1, shuffle=False, pin_memory=True) if test_dataset else None
         )
-        val_dataloader = DataLoader(ConcatDataset(val_dataset), batch_size=1, shuffle=False, pin_memory=True)
-        test_dataloader = DataLoader(ConcatDataset(test_dataset), batch_size=1, shuffle=False, pin_memory=True)
-        return train_dataloader, val_dataloader, test_dataloader
-
-        # ct_train_dataloader = DataLoader(train_dataset[0], batch_size=batch_size, shuffle=~dev, pin_memory=True)
-        # ct_val_dataloader = DataLoader(val_dataset[0], batch_size=1, shuffle=False, pin_memory=True)
-        # mr_train_dataloader = DataLoader(train_dataset[1], batch_size=batch_size, shuffle=~dev, pin_memory=True)
-        # mr_val_dataloader = DataLoader(val_dataset[1], batch_size=1, shuffle=False, pin_memory=True)
-        # ct_test_dataloader = (
-        #     DataLoader(test_dataset[0], batch_size=1, shuffle=False, pin_memory=True) if test_dataset else None
-        # )
-        # mr_test_dataloader = (
-        #     DataLoader(test_dataset[1], batch_size=1, shuffle=False, pin_memory=True) if test_dataset else None
-        # )
-        # return (
-        #     (ct_train_dataloader, mr_train_dataloader),
-        #     (ct_val_dataloader, mr_val_dataloader),
-        #     (ct_test_dataloader, mr_test_dataloader),
-        # )
+        mr_test_dataloader = (
+            DataLoader(test_dataset[1], batch_size=1, shuffle=False, pin_memory=True) if test_dataset else None
+        )
+        return (
+            (ct_train_dataloader, mr_train_dataloader),
+            (ct_val_dataloader, mr_val_dataloader),
+            (ct_test_dataloader, mr_test_dataloader),
+        )
 
     @staticmethod
     def init_module(out_channels, loss, optim, lr, data_info, modality, partially_labelled, device, **kwargs):
@@ -348,7 +319,7 @@ class DANNInitializer:
             ct_foreground = data_info["fg"]["ct"]
             mr_foreground = data_info["fg"]["mr"]
 
-        module = DANNModule(
+        module = GradAttDANNModule(
             out_channels=out_channels,
             num_classes=data_info["num_classes"],
             ct_foreground=ct_foreground,
@@ -362,7 +333,7 @@ class DANNInitializer:
 
     @staticmethod
     def init_trainer(num_classes, max_iter, eval_step, checkpoint_dir, device, data_info, partially_labelled, **kwargs):
-        trainer = DANNTrainer(
+        trainer = GradAttDANNTrainer(
             num_classes=num_classes,
             max_iter=max_iter,
             eval_step=eval_step,
