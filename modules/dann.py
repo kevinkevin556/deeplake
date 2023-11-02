@@ -138,33 +138,10 @@ class DANNModule(nn.Module):
         seg_loss = ct_seg_loss + mr_seg_loss
         seg_loss.backward(retain_graph=True)
 
-        # Domain Classifier branch
+        # Domain Classifier branch: predict domain label
         ct_dom_pred_logits = self.dom_classifier(self.grl.apply(ct_feature))
         mr_dom_pred_logits = self.dom_classifier(self.grl.apply(mr_feature))
         adv_loss = self.adv_loss(ct_dom_pred_logits, mr_dom_pred_logits)
-        adv_loss.backward()
-
-        self.optimizer.step()
-        return seg_loss.item(), adv_loss.item()
-
-    def updatev2(self, images, masks, mod_equiv, alpha):
-        self.grl.set_alpha(alpha)
-        self.optimizer.zero_grad()
-
-        # Predictor branch
-        ct_skip_outputs, ct_feature = self.feat_extractor(images[0])
-        ct_output = self.predictor((ct_skip_outputs, ct_feature))
-        ct_seg_loss = self.ct_tal(ct_output, masks[0])
-        mr_skip_outputs, mr_feature = self.feat_extractor(images[1])
-        mr_output = self.predictor((mr_skip_outputs, mr_feature))
-        mr_seg_loss = self.mr_tal(mr_output, masks[1])
-        seg_loss = ct_seg_loss + mr_seg_loss
-        seg_loss.backward(retain_graph=True)
-
-        # Domain Classifier branch
-        features = torch.cat([ct_feature, mr_feature], dim=1)
-        pred_modal_equiv = self.dom_classifier(self.grl.apply(features))
-        adv_loss = self.adv_loss(pred_modal_equiv, mod_equiv)
         adv_loss.backward()
 
         self.optimizer.step()
@@ -316,28 +293,21 @@ class DANNTrainer:
 class DANNInitializer:
     @staticmethod
     def init_dataloaders(train_dataset, val_dataset, test_dataset, batch_size, dev):
-        train_dataloader = DataLoader(
-            ConcatDataset(train_dataset), batch_size=batch_size, shuffle=~dev, pin_memory=True
+        ct_train_dataloader = DataLoader(train_dataset[0], batch_size=batch_size, shuffle=~dev, pin_memory=True)
+        ct_val_dataloader = DataLoader(val_dataset[0], batch_size=1, shuffle=False, pin_memory=True)
+        mr_train_dataloader = DataLoader(train_dataset[1], batch_size=batch_size, shuffle=~dev, pin_memory=True)
+        mr_val_dataloader = DataLoader(val_dataset[1], batch_size=1, shuffle=False, pin_memory=True)
+        ct_test_dataloader = (
+            DataLoader(test_dataset[0], batch_size=1, shuffle=False, pin_memory=True) if test_dataset else None
         )
-        val_dataloader = DataLoader(ConcatDataset(val_dataset), batch_size=1, shuffle=False, pin_memory=True)
-        test_dataloader = DataLoader(ConcatDataset(test_dataset), batch_size=1, shuffle=False, pin_memory=True)
-        return train_dataloader, val_dataloader, test_dataloader
-
-        # ct_train_dataloader = DataLoader(train_dataset[0], batch_size=batch_size, shuffle=~dev, pin_memory=True)
-        # ct_val_dataloader = DataLoader(val_dataset[0], batch_size=1, shuffle=False, pin_memory=True)
-        # mr_train_dataloader = DataLoader(train_dataset[1], batch_size=batch_size, shuffle=~dev, pin_memory=True)
-        # mr_val_dataloader = DataLoader(val_dataset[1], batch_size=1, shuffle=False, pin_memory=True)
-        # ct_test_dataloader = (
-        #     DataLoader(test_dataset[0], batch_size=1, shuffle=False, pin_memory=True) if test_dataset else None
-        # )
-        # mr_test_dataloader = (
-        #     DataLoader(test_dataset[1], batch_size=1, shuffle=False, pin_memory=True) if test_dataset else None
-        # )
-        # return (
-        #     (ct_train_dataloader, mr_train_dataloader),
-        #     (ct_val_dataloader, mr_val_dataloader),
-        #     (ct_test_dataloader, mr_test_dataloader),
-        # )
+        mr_test_dataloader = (
+            DataLoader(test_dataset[1], batch_size=1, shuffle=False, pin_memory=True) if test_dataset else None
+        )
+        return (
+            (ct_train_dataloader, mr_train_dataloader),
+            (ct_val_dataloader, mr_val_dataloader),
+            (ct_test_dataloader, mr_test_dataloader),
+        )
 
     @staticmethod
     def init_module(out_channels, loss, optim, lr, data_info, modality, partially_labelled, device, **kwargs):
