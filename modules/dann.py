@@ -112,7 +112,7 @@ class DANNModule(nn.Module):
             if self.mr_background is not None
             else DiceCELoss(to_onehot_y=True, softmax=True)
         )
-        self.adv_loss = AdversarialLoss()  # TODO: Replace Adversial loss with BCEloss
+        self.adv_loss = BCEWithLogitsLoss()
 
     def forward(self, x, branch=0):
         skip_outputs, feature = self.feat_extractor(x)
@@ -141,7 +141,10 @@ class DANNModule(nn.Module):
         # Domain Classifier branch: predict domain label
         ct_dom_pred_logits = self.dom_classifier(self.grl.apply(ct_feature))
         mr_dom_pred_logits = self.dom_classifier(self.grl.apply(mr_feature))
-        adv_loss = self.adv_loss(ct_dom_pred_logits, mr_dom_pred_logits)
+        ct_shape, mr_shape = ct_dom_pred_logits.shape, mr_dom_pred_logits.shape
+        dom_pred_logits = torch.cat([ct_dom_pred_logits, mr_dom_pred_logits])
+        dom_true_label = torch.cat((ones(ct_shape, device="cuda"), zeros(mr_shape, device="cuda")))
+        adv_loss = self.adv_loss(dom_pred_logits, dom_true_label)
         adv_loss.backward()
 
         self.optimizer.step()
@@ -169,8 +172,8 @@ class DANNModule(nn.Module):
         print("Module Encoder:", self.feat_extractor.__class__.__name__)
         print("       Decoder:", self.predictor.__class__.__name__)
         print("Optimizer:", self.optimizer.__class__.__name__, f"(lr = {self.lr})")
-        print("Loss function:", {"ct": self.ct_tal, "mr": self.mr_tal})
-        print("Discriminate")
+        print("Segmentation Loss:", {"ct": self.ct_tal, "mr": self.mr_tal})
+        print("Discriminator Loss:", self.adv_loss)
 
 
 class DANNTrainer:
@@ -258,12 +261,6 @@ class DANNTrainer:
 
         for step in train_pbar:
             module.train()
-            batch1 = next(iter(train_dataloader))
-            batch2 = next(iter(train_dataloader))
-            images = batch1["image"].to(self.device), batch2["image"].to(self.device)
-            masks = batch1["label"].to(self.device), batch2["label"].to(self.device)
-            modality_labels = batch1["modality"] == batch2["modality"]
-
             ct_batch = next(iter(ct_train_dtl))
             mr_batch = next(iter(mr_train_dtl))
             ct_image, ct_mask = ct_batch["image"].to(self.device), ct_batch["label"].to(self.device)
