@@ -76,14 +76,14 @@ class DANN2Module(nn.Module):
         self.predictor = BasicUNetDecoder(out_channels=out_channels)
         self.grl = GradientReversalLayer(alpha=1)
         self.dom_classifier = nn.Sequential(
-            nn.Conv3d(512, 256, kernel_size=3, padding=1),
+            nn.Conv3d(512, 128, kernel_size=3, padding=1),
             nn.MaxPool3d(kernel_size=2),
             nn.ReLU(),
-            nn.Conv3d(256, 128, kernel_size=3, padding=1),
+            nn.Conv3d(128, 64, kernel_size=3, padding=1),
             nn.MaxPool3d(kernel_size=2),
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(128, 1),
+            nn.Linear(64, 1),
         )
 
         # Optimizer
@@ -122,22 +122,28 @@ class DANN2Module(nn.Module):
             dom_pred_logits = self.dom_classifier(self.grl.apply(feature))
             return dom_pred_logits
 
-    def update(self, images, masks, mod_equiv, alpha):
+    def update(self, images, masks, modalities, alpha):
         self.grl.set_alpha(alpha)
         self.optimizer.zero_grad()
 
         # Predictor branch
-        ct_skip_outputs, ct_feature = self.feat_extractor(images[0])
-        ct_output = self.predictor((ct_skip_outputs, ct_feature))
-        ct_seg_loss = self.ct_tal(ct_output, masks[0])
-        mr_skip_outputs, mr_feature = self.feat_extractor(images[1])
-        mr_output = self.predictor((mr_skip_outputs, mr_feature))
-        mr_seg_loss = self.mr_tal(mr_output, masks[1])
-        seg_loss = ct_seg_loss + mr_seg_loss
+        _features = {}
+        _seg_losses = {}
+        for i in [0, 1]:
+            skip_outputs, _features[i] = self.feat_extractor(images[i])
+            output = self.predictor((skip_outputs, _features[i]))
+            if modalities[i][0] == "ct":
+                _seg_losses[i] = self.ct_tal(output, masks[i])
+            elif modalities[i][0] == "mr":
+                _seg_losses[i] = self.mr_tal(output, masks[i])
+            else:
+                raise ValueError(f"Invalid modality {modalities[i][0]}")
+        seg_loss = _seg_losses[0] + _seg_losses[1]
         seg_loss.backward(retain_graph=True)
 
         # Domain Classifier branch: predict domain equivalent
-        features = torch.cat([ct_feature, mr_feature], dim=1)
+        mod_equiv = torch.tensor([[m0 == m1] for m0, m1 in zip(*modalities)], device="cuda") * 1.0
+        features = torch.cat([_features[0], _features[1]], dim=1)
         pred_modal_equiv = self.dom_classifier(self.grl.apply(features))
         adv_loss = self.adv_loss(pred_modal_equiv, mod_equiv)
         adv_loss.backward()
@@ -259,13 +265,12 @@ class DANN2Trainer:
             images = batch1["image"].to(self.device), batch2["image"].to(self.device)
             masks = batch1["label"].to(self.device), batch2["label"].to(self.device)
             mods = batch1["modality"], batch2["modality"]
-            modal_equiv = torch.tensor([[m0 == m1] for m0, m1 in zip(*mods)], device="cuda") * 1.0
             ## We gradually increase the value of lambda of grl as the training proceeds.
             #    p = float(batch_idx + epoch_idx * len_dataloader) / (n_epoch * len_dataloader)
             #    grl_lambda = 2. / (1. + np.exp(-10 * p)) - 1
             p = float(step) / self.max_iter
             grl_lambda = 2.0 / (1.0 + np.exp(-10 * p)) - 1
-            seg_loss, adv_loss = module.update(images, masks, modal_equiv, alpha=grl_lambda)
+            seg_loss, adv_loss = module.update(images, masks, mods, alpha=grl_lambda)
             writer.add_scalar(f"train/seg_loss", seg_loss, step)
             writer.add_scalar(f"train/adv_loss", adv_loss, step)
             train_pbar.set_description(
