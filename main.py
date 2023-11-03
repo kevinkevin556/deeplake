@@ -19,6 +19,7 @@ from torch.utils.data import ConcatDataset
 
 from modules.co_training import CoTrainingInitializer
 from modules.dann import DANNInitializer
+from modules.dann2 import DANN2Initializer
 from modules.segmentation import SegmentationInitializer
 
 device = torch.device("cuda")
@@ -30,6 +31,10 @@ modules = {
     },
     "dann": {
         "initializer": DANNInitializer,
+        "return_modality_dataset": True,
+    },
+    "dann2": {
+        "initializer": DANN2Initializer,
         "return_modality_dataset": True,
     },
     "co_training": {
