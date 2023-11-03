@@ -15,6 +15,7 @@ from medaset.amos import (
     simple_amos_val_transforms,
 )
 from monai.utils import set_determinism
+from rich_argparse import RichHelpFormatter
 from torch.utils.data import ConcatDataset
 
 from modules.co_training import CoTrainingInitializer
@@ -98,7 +99,7 @@ def split_train_data(data_info: dict, modality: str, bg_mapping: dict, data_conf
 
 
 def get_args():
-    parser = argparse.ArgumentParser(description="Segementation branch of DANN, using AMOS dataset.")
+    parser = argparse.ArgumentParser(description="A CLI for executing modules.", formatter_class=RichHelpFormatter)
     # Data related hyperparameters
     parser.add_argument(
         "--dataset",
@@ -129,7 +130,7 @@ def get_args():
         type=str,
         default="train",
         choices=["train", "test"],
-        help="Choose the mode of operation, either 'train' or 'test'.",
+        help="Choose the mode of operation, either `train` or `test`.",
     )
     parser.add_argument(
         "--module", type=str, required=True, choices=modules.keys(), help="Specify the module to execute."
@@ -145,7 +146,7 @@ def get_args():
         type=str,
         default="dice2",
         choices=["dice2", "tal"],
-        help="Choose the loss for training, either 'dice2 (DiceCELoss)' or 'tal'.",
+        help="Choose the loss for training, either `dice2` (DiceCELoss) or `tal`.",
     )
     parser.add_argument("--lr", type=float, default=0.001, help="Learning rate for training.")
     parser.add_argument(
@@ -166,13 +167,13 @@ def get_args():
         action="store_true",
         help=(
             "Enable developer mode with reduced data and no shuffling for debugging. "
-            "Checkpoints are saved in the directory 'debug/'."
+            "Checkpoints are saved in the directory `debug/`."
         ),
     )
     parser.add_argument(
         "--beta",
         action="store_true",
-        help="Enable full dataset loading, training data shuffling, and checkpoint saving in 'debug/'.",
+        help="Enable full dataset loading, training data shuffling, and checkpoint saving in `debug/`.",
     )
     # Efficiency hyperparameters
     parser.add_argument("--cache_rate", type=float, default=0.1, help="Set the rate for caching the dataset into GPUs.")
