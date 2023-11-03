@@ -100,45 +100,83 @@ def split_train_data(data_info: dict, modality: str, bg_mapping: dict, data_conf
 def get_args():
     parser = argparse.ArgumentParser(description="Segementation branch of DANN, using AMOS dataset.")
     # Data related hyperparameters
-    parser.add_argument("--dataset", type=str, default="amos", help="amos / simple_amos")
-    parser.add_argument("--modality", type=str, default="ct", help="Modality type: ct / mr / ct+mr")
-    parser.add_argument("--partially_labelled", type=bool, help="If true, train with annotation-masked data")
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="amos",
+        choices=datasets.keys(),
+        help="Specify the dataset you want to use for training or testing.",
+    )
+    parser.add_argument(
+        "--modality",
+        type=str,
+        default="ct",
+        choices=["ct", "mr", "ct+mr", "ct+mr:balance"],
+        help="Choose the type of data modality, such as CT scans, MRIs, or a combination.",
+    )
+    parser.add_argument(
+        "--partially_labelled", type=bool, help="If enabled, the training will include partially labeled data."
+    )
     parser.add_argument(
         "--holdout_ratio",
         type=float,
         default=0.1,
-        help="The proportion of training data allocated for validation. The number should be in [0, 1).",
+        help="The proportion of training data allocated for validation (between 0 and 1).",
     )
     # Training module hyperparameters
-    parser.add_argument("--mode", type=str, default="train", help="Mode: train / test")
-    parser.add_argument("--module", type=str, required=True, help="Module: segmentation / dann")
     parser.add_argument(
-        "--pretrained", type=str, help="Checkpointing dir for testing or continuing training procedure."
+        "--mode",
+        type=str,
+        default="train",
+        choices=["train", "test"],
+        help="Choose the mode of operation, either 'train' or 'test'.",
     )
-    parser.add_argument("--batch_size", type=int, default="1", help="Batch size for subject input")
-    parser.add_argument("--loss", type=str, default="dice2", help="Loss: dice2 (=DiceCE) / tal")
-    parser.add_argument("--lr", type=float, default=0.0001, help="Learning rate for training")
-    parser.add_argument("--optim", type=str, default="AdamW", help="Optimizer types: Adam / AdamW")
-    parser.add_argument("--max_iter", type=int, default=40000, help="Maximum iteration steps for training")
-    parser.add_argument("--eval_step", type=int, default=500, help="Per steps to perform validation")
-    parser.add_argument("--deterministic", action="store_true")
+    parser.add_argument(
+        "--module", type=str, required=True, choices=modules.keys(), help="Specify the module to execute."
+    )
+    parser.add_argument(
+        "--pretrained",
+        type=str,
+        help="Provide a deirectory for checkpointing during testing or continuing training procedure.",
+    )
+    parser.add_argument("--batch_size", type=int, default=1, help="Set the batch size for input data.")
+    parser.add_argument(
+        "--loss",
+        type=str,
+        default="dice2",
+        choices=["dice2", "tal"],
+        help="Choose the loss for training, either 'dice2 (DiceCELoss)' or 'tal'.",
+    )
+    parser.add_argument("--lr", type=float, default=0.001, help="Learning rate for training.")
+    parser.add_argument(
+        "--optim",
+        type=str,
+        default="AdamW",
+        choices=["Adam", "AdamW", "SGD"],
+        help="Select the optimizer for training.",
+    )
+    parser.add_argument("--max_iter", type=int, default=10000, help="Define the maximum number of training iterations.")
+    parser.add_argument(
+        "--eval_step", type=int, default=100, help="Set the frequency at which validation is performed during training."
+    )
+    parser.add_argument("--deterministic", action="store_true", help="Enable deterministic training.")
     # Developer mode options
     parser.add_argument(
         "--alpha",
         action="store_true",
         help=(
-            "Developer mode."
-            "Only a small fraction of data are loaded,"
-            "the train_dataloader is not shuffled,"
-            "and temp checkpoints are saved in the directory 'debug/'"
+            "Enable developer mode with reduced data and no shuffling for debugging. "
+            "Checkpoints are saved in the directory 'debug/'."
         ),
     )
     parser.add_argument(
-        "--beta", action="store_true", help="Full dataset loaded, data shuffled, and checkpoints saved in 'debug/'."
+        "--beta",
+        action="store_true",
+        help="Enable full dataset loading, training data shuffling, and checkpoint saving in 'debug/'.",
     )
     # Efficiency hyperparameters
-    parser.add_argument("--cache_rate", type=float, default=0.1, help="Cache rate to cache your dataset into GPUs")
-    parser.add_argument("--num_workers", type=int, default=2, help="Number of workers")
+    parser.add_argument("--cache_rate", type=float, default=0.1, help="Set the rate for caching the dataset into GPUs.")
+    parser.add_argument("--num_workers", type=int, default=2, help="Specify the number of data loading workers")
     args = parser.parse_args()
     return args
 
