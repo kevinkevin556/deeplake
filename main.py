@@ -99,6 +99,7 @@ def split_train_data(data_info: dict, modality: str, bg_mapping: dict, data_conf
 
 def get_args():
     parser = argparse.ArgumentParser(description="Segementation branch of DANN, using AMOS dataset.")
+    # Data related hyperparameters
     parser.add_argument("--dataset", type=str, default="amos", help="amos / simple_amos")
     parser.add_argument("--modality", type=str, default="ct", help="Modality type: ct / mr / ct+mr")
     parser.add_argument("--partially_labelled", type=bool, help="If true, train with annotation-masked data")
@@ -121,8 +122,9 @@ def get_args():
     parser.add_argument("--max_iter", type=int, default=40000, help="Maximum iteration steps for training")
     parser.add_argument("--eval_step", type=int, default=500, help="Per steps to perform validation")
     parser.add_argument("--deterministic", action="store_true")
+    # Developer mode options
     parser.add_argument(
-        "--dev",
+        "--alpha",
         action="store_true",
         help=(
             "Developer mode."
@@ -130,6 +132,9 @@ def get_args():
             "the train_dataloader is not shuffled,"
             "and temp checkpoints are saved in the directory 'debug/'"
         ),
+    )
+    parser.add_argument(
+        "--beta", action="store_true", help="Full dataset loaded, data shuffled, and checkpoints saved in 'debug/'."
     )
     # Efficiency hyperparameters
     parser.add_argument("--cache_rate", type=float, default=0.1, help="Cache rate to cache your dataset into GPUs")
@@ -270,7 +275,9 @@ def main():
     eval_step = args.eval_step
     # Efficiency
     deterministic = args.deterministic
-    dev = args.dev
+    alpha = args.alpha
+    beta = args.beta
+    # Efficiency
     cache_rate = args.cache_rate
     num_workers = args.num_workers
 
@@ -292,10 +299,10 @@ def main():
         root_dir=root,
         cache_rate=cache_rate,
         num_workers=num_workers,
-        dev=dev,
+        dev=alpha,
     )
     train_dataloader, val_dataloader, test_dataloader = mod_init.init_dataloaders(
-        train_dataset, val_dataset, test_dataset, batch_size, dev
+        train_dataset, val_dataset, test_dataset, batch_size, alpha
     )
 
     ## Initialize module
@@ -318,7 +325,7 @@ def main():
     # ** note: temp checkpoints are saved in the "debug" directory
     #          to separate the result of experiments and temporary
     #          checkpoints generated in developer mode.
-    checkpoint_dir = output if not dev else debug
+    checkpoint_dir = output if not (alpha or beta) else debug
     # create subfolder based on time
     checkpoint_dir = Path(checkpoint_dir) / datetime.now().strftime("%Y%m%d-%H%M%S")
     trainer = mod_init.init_trainer(
