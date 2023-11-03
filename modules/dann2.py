@@ -53,7 +53,7 @@ class AdversarialLoss(nn.Module):
         return bce(y_pred, y_true)
 
 
-class DANNModule(nn.Module):
+class DANN2Module(nn.Module):
     def __init__(
         self,
         out_channels: int,
@@ -76,14 +76,14 @@ class DANNModule(nn.Module):
         self.predictor = BasicUNetDecoder(out_channels=out_channels)
         self.grl = GradientReversalLayer(alpha=1)
         self.dom_classifier = nn.Sequential(
+            nn.Conv3d(512, 256, kernel_size=3, padding=1),
+            nn.MaxPool3d(kernel_size=2),
+            nn.ReLU(),
             nn.Conv3d(256, 128, kernel_size=3, padding=1),
             nn.MaxPool3d(kernel_size=2),
             nn.ReLU(),
-            nn.Conv3d(128, 64, kernel_size=3, padding=1),
-            nn.MaxPool3d(kernel_size=2),
-            nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(64, 1),
+            nn.Linear(128, 1),
         )
 
         # Optimizer
@@ -111,7 +111,7 @@ class DANNModule(nn.Module):
             if self.mr_background is not None
             else DiceCELoss(to_onehot_y=True, softmax=True)
         )
-        self.adv_loss = AdversarialLoss()  # TODO: Replace Adversial loss with BCEloss
+        self.adv_loss = BCEWithLogitsLoss()
 
     def forward(self, x, branch=0):
         skip_outputs, feature = self.feat_extractor(x)
@@ -142,7 +142,7 @@ class DANNModule(nn.Module):
         adv_loss = self.adv_loss(pred_modal_equiv, mod_equiv)
         adv_loss.backward()
 
-        self.optimizexr.step()
+        self.optimizer.step()
         return seg_loss.item(), adv_loss.item()
 
     def inference(self, x, roi_size=(96, 96, 96), sw_batch_size=2):
@@ -167,11 +167,11 @@ class DANNModule(nn.Module):
         print("Module Encoder:", self.feat_extractor.__class__.__name__)
         print("       Decoder:", self.predictor.__class__.__name__)
         print("Optimizer:", self.optimizer.__class__.__name__, f"(lr = {self.lr})")
-        print("Loss function:", {"ct": self.ct_tal, "mr": self.mr_tal})
-        print("Discriminate")
+        print("Segmentation Loss:", {"ct": self.ct_tal, "mr": self.mr_tal})
+        print("Discriminator Loss:", self.adv_loss)
 
 
-class DANNTrainer:
+class DANN2Trainer:
     def __init__(
         self,
         num_classes: int,
@@ -194,12 +194,12 @@ class DANNTrainer:
         self.partially_labelled = partially_labelled
 
     def show_training_info(self, module, train_dataloader, val_dataloader):
-        ct_train_dtl, mr_train_dtl = train_dataloader
-        ct_val_dtl, mr_val_dtl = val_dataloader
+        ct_train_data, mr_train_data = train_dataloader.dataset.datasets
+        ct_val_data, mr_val_data = val_dataloader.dataset.datasets
         print("--------")
         print("Device:", self.device)  # device is a global variable (not an argument of cli)
-        print("# of Training Samples:", {"ct": len(ct_train_dtl), "mr": len(mr_train_dtl)})
-        print("# of Validation Samples:", {"ct": len(ct_val_dtl), "mr": len(mr_val_dtl)})
+        print("# of Training Samples:", {"ct": len(ct_train_data), "mr": len(mr_train_data)})
+        print("# of Validation Samples:", {"ct": len(ct_val_data), "mr": len(mr_val_data)})
         print("Max iteration:", self.max_iter, f"steps (validates per {self.eval_step} steps)")
         print("Checkpoint directory:", self.checkpoint_dir)
         print("Evaluation metric:", self.metric.__class__.__name__)
@@ -208,11 +208,10 @@ class DANNTrainer:
 
     def validation(self, module, dataloader, global_step=None):
         module.eval()
-        data_iter = itertools.chain(*dataloader)
         val_metrics = []
         num_classes = module.num_classes
         background = {"ct": module.ct_background, "mr": module.mr_background}
-        val_pbar = tqdm(data_iter, total=len(dataloader[0]) + len(dataloader[1]), dynamic_ncols=True)
+        val_pbar = tqdm(dataloader, total=len(dataloader), dynamic_ncols=True)
         metric_name = self.metric.__class__.__name__
         train_val_desc = (
             "Validate ({} Steps) (Partially-labelled:{}) ({}={:2.5f})"  # progress bar description used during training
@@ -248,7 +247,6 @@ class DANNTrainer:
 
     def train(self, module, train_dataloader, val_dataloader):
         self.show_training_info(module, train_dataloader, val_dataloader)
-        ct_train_dtl, mr_train_dtl = train_dataloader
         best_metric = 0
         train_pbar = tqdm(range(self.max_iter), dynamic_ncols=True)
         writer = SummaryWriter(log_dir=self.checkpoint_dir)
@@ -256,26 +254,22 @@ class DANNTrainer:
 
         for step in train_pbar:
             module.train()
-            batch1 = next(iter(train_dataloader))
-            batch2 = next(iter(train_dataloader))
+            data_iter = iter(train_dataloader)
+            batch1, batch2 = next(data_iter), next(data_iter)
             images = batch1["image"].to(self.device), batch2["image"].to(self.device)
             masks = batch1["label"].to(self.device), batch2["label"].to(self.device)
-            modality_labels = batch1["modality"] == batch2["modality"]
-
-            ct_batch = next(iter(ct_train_dtl))
-            mr_batch = next(iter(mr_train_dtl))
-            ct_image, ct_mask = ct_batch["image"].to(self.device), ct_batch["label"].to(self.device)
-            mr_image, mr_mask = mr_batch["image"].to(self.device), mr_batch["label"].to(self.device)
+            mods = batch1["modality"], batch2["modality"]
+            modal_equiv = torch.tensor([[m0 == m1] for m0, m1 in zip(*mods)], device="cuda") * 1.0
             ## We gradually increase the value of lambda of grl as the training proceeds.
             #    p = float(batch_idx + epoch_idx * len_dataloader) / (n_epoch * len_dataloader)
             #    grl_lambda = 2. / (1. + np.exp(-10 * p)) - 1
             p = float(step) / self.max_iter
             grl_lambda = 2.0 / (1.0 + np.exp(-10 * p)) - 1
-            seg_loss, adv_loss = module.update(ct_image, ct_mask, mr_image, mr_mask, alpha=grl_lambda)
+            seg_loss, adv_loss = module.update(images, masks, modal_equiv, alpha=grl_lambda)
             writer.add_scalar(f"train/seg_loss", seg_loss, step)
             writer.add_scalar(f"train/adv_loss", adv_loss, step)
             train_pbar.set_description(
-                f"Training ({step} / {self.max_iter} Steps) (seg_loss={seg_loss:2.5f}, adv_loss={adv_loss:2.5f})"
+                f"Training ({step} / {self.max_iter} Steps) ({mods[0][0]},{mods[1][0]}) (seg_loss={seg_loss:2.5f}, adv_loss={adv_loss:2.5f})"
             )
             if ((step + 1) % self.eval_step == 0) or (step == self.max_iter - 1):
                 val_metric = self.validation(module, val_dataloader, global_step=step)
@@ -288,7 +282,7 @@ class DANNTrainer:
                     tqdm.write(f"No improvement. Validation: (New) {val_metric:2.7f} <= (Old) {best_metric:2.7f}")
 
 
-class DANNInitializer:
+class DANN2Initializer:
     @staticmethod
     def init_dataloaders(train_dataset, val_dataset, test_dataset, batch_size, dev):
         train_dataloader = DataLoader(
@@ -307,7 +301,7 @@ class DANNInitializer:
             ct_foreground = data_info["fg"]["ct"]
             mr_foreground = data_info["fg"]["mr"]
 
-        module = DANNModule(
+        module = DANN2Module(
             out_channels=out_channels,
             num_classes=data_info["num_classes"],
             ct_foreground=ct_foreground,
@@ -321,7 +315,7 @@ class DANNInitializer:
 
     @staticmethod
     def init_trainer(num_classes, max_iter, eval_step, checkpoint_dir, device, data_info, partially_labelled, **kwargs):
-        trainer = DANNTrainer(
+        trainer = DANN2Trainer(
             num_classes=num_classes,
             max_iter=max_iter,
             eval_step=eval_step,
