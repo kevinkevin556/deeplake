@@ -303,6 +303,7 @@ def main():
     partially_labelled = args.partially_labelled  # {True, False}
     holdout_ratio = args.holdout_ratio
     mode = args.mode  # {"train", "test"}
+
     # Module
     module_name = args.module  # {"segmentation", "dann"}
     pretrained = args.pretrained
@@ -312,10 +313,12 @@ def main():
     optim = args.optim
     max_iter = args.max_iter
     eval_step = args.eval_step
-    # Efficiency
+
+    # Development
     deterministic = args.deterministic
     alpha = args.alpha
     beta = args.beta
+
     # Efficiency
     cache_rate = args.cache_rate
     num_workers = args.num_workers
