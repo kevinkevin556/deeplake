@@ -40,21 +40,6 @@ class GradientReversalLayer(torch.autograd.Function):
         return -grad_output
 
 
-class AdversarialLoss(nn.Module):
-    def __init__(self, cuda=True):
-        super().__init__()
-        self.cuda = cuda
-
-    def forward(self, ct_dom_pred_logits, mr_dom_pred_logits):
-        # label: ct = 0, mr = 1
-        bce = BCEWithLogitsLoss()
-        y_pred = torch.cat((ct_dom_pred_logits, mr_dom_pred_logits))
-        y_true = torch.cat((ones(ct_dom_pred_logits.shape), zeros(mr_dom_pred_logits.shape)))
-        if self.cuda:
-            y_true = y_true.to("cuda")
-        return bce(y_pred, y_true)
-
-
 class DANN2Module(nn.Module):
     def __init__(
         self,
@@ -64,6 +49,7 @@ class DANN2Module(nn.Module):
         mr_foreground: Optional[list] = None,
         optimizer: str = "AdamW",
         lr: float = 0.0001,
+        default_forward_branch: int = 0,
     ):
         super().__init__()
 
@@ -73,11 +59,12 @@ class DANN2Module(nn.Module):
         self.ct_background = list(set(range(1, self.num_classes)) - set(ct_foreground)) if ct_foreground else None
         self.mr_foreground = mr_foreground
         self.mr_background = list(set(range(1, self.num_classes)) - set(mr_foreground)) if mr_foreground else None
+        self.default_forward_branch = default_forward_branch
 
         self.feat_extractor = BasicUNetEncoder(in_channels=1)
         self.predictor = BasicUNetDecoder(out_channels=out_channels)
         self.grl = GradientReversalLayer(alpha=1)
-        
+
         # domain classifier for update
         self.dom_classifier = nn.Sequential(
             nn.Conv3d(512, 128, kernel_size=3, padding=1),
@@ -91,16 +78,16 @@ class DANN2Module(nn.Module):
         )
 
         # domain classifier for update_v2
-        self.dom_classifier = nn.Sequential(
-            nn.Conv3d(18, 9, kernel_size=3, padding=1),
-            nn.MaxPool3d(kernel_size=2),
-            nn.ReLU(),
-            nn.Conv3d(9, 9, kernel_size=3, padding=1),
-            nn.MaxPool3d(kernel_size=2),
-            nn.ReLU(),
-            nn.Flatten(),
-            nn.Linear(9, 1),
-        )
+        # self.dom_classifier = nn.Sequential(
+        #     nn.Conv3d(18, 9, kernel_size=3, padding=1),
+        #     nn.MaxPool3d(kernel_size=2),
+        #     nn.ReLU(),
+        #     nn.Conv3d(9, 9, kernel_size=3, padding=1),
+        #     nn.MaxPool3d(kernel_size=2),
+        #     nn.ReLU(),
+        #     nn.Flatten(),
+        #     nn.Linear(9, 1),
+        # )
 
         # Optimizer
         params = (
@@ -129,8 +116,9 @@ class DANN2Module(nn.Module):
         )
         self.adv_loss = BCEWithLogitsLoss()
 
-    def forward(self, x, branch=0):
+    def forward(self, x):
         skip_outputs, feature = self.feat_extractor(x)
+        branch = self.default_forward_branch
         if branch == 0:
             output = self.predictor((skip_outputs, feature))
             return output

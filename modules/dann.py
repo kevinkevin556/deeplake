@@ -38,21 +38,6 @@ class GradientReversalLayer(torch.autograd.Function):
         return -grad_output
 
 
-class AdversarialLoss(nn.Module):
-    def __init__(self, cuda=True):
-        super().__init__()
-        self.cuda = cuda
-
-    def forward(self, ct_dom_pred_logits, mr_dom_pred_logits):
-        # label: ct = 0, mr = 1
-        bce = BCEWithLogitsLoss()
-        y_pred = torch.cat((ct_dom_pred_logits, mr_dom_pred_logits))
-        y_true = torch.cat((ones(ct_dom_pred_logits.shape), zeros(mr_dom_pred_logits.shape)))
-        if self.cuda:
-            y_true = y_true.to("cuda")
-        return bce(y_pred, y_true)
-
-
 class DANNModule(nn.Module):
     def __init__(
         self,
@@ -62,6 +47,7 @@ class DANNModule(nn.Module):
         mr_foreground: Optional[list] = None,
         optimizer: str = "AdamW",
         lr: float = 0.0001,
+        default_forward_branch: int = 0,
     ):
         super().__init__()
 
@@ -72,6 +58,7 @@ class DANNModule(nn.Module):
         self.ct_background = list(set(range(1, self.num_classes)) - set(ct_foreground)) if ct_foreground else None
         self.mr_foreground = mr_foreground
         self.mr_background = list(set(range(1, self.num_classes)) - set(mr_foreground)) if mr_foreground else None
+        self.default_forward_branch = default_forward_branch
 
         self.feat_extractor = BasicUNetEncoder(in_channels=1)
         self.predictor = BasicUNetDecoder(out_channels=out_channels)
@@ -114,8 +101,9 @@ class DANNModule(nn.Module):
         )
         self.adv_loss = BCEWithLogitsLoss()
 
-    def forward(self, x, branch=0):
+    def forward(self, x):
         skip_outputs, feature = self.feat_extractor(x)
+        branch = self.default_forward_branch
         if branch == 0:
             output = self.predictor((skip_outputs, feature))
             return output
@@ -124,6 +112,10 @@ class DANNModule(nn.Module):
             return dom_pred_logits
 
     def update(self, ct_image, ct_mask, mr_image, mr_mask, alpha=1):
+        """update_v1:
+        Every time a CT image and an MR image are loaded to
+        update the parameters of the module.
+        """
         self.grl.set_alpha(alpha)
         self.optimizer.zero_grad()
 
@@ -145,6 +137,40 @@ class DANNModule(nn.Module):
         dom_pred_logits = torch.cat([ct_dom_pred_logits, mr_dom_pred_logits])
         dom_true_label = torch.cat((ones(ct_shape, device="cuda"), zeros(mr_shape, device="cuda")))
         adv_loss = self.adv_loss(dom_pred_logits, dom_true_label)
+        adv_loss.backward()
+
+        self.optimizer.step()
+        return seg_loss.item(), adv_loss.item()
+
+    def update_v2(self, images, masks, modalities, alpha):
+        """update_v2:
+        Each time 2 random images (whose modality are not specified)
+        are loaded to update network's parameters.
+        """
+        self.grl.set_alpha(alpha)
+        self.optimizer.zero_grad()
+
+        _seg_losses = {}
+        _adv_losses = {}
+        for i in [0, 1]:
+            # Predictor branch
+            skip_outputs, feature = self.feat_extractor(images[i])
+            output = self.predictor((skip_outputs, feature))
+            if modalities[i][0] == "ct":
+                _seg_losses[i] = self.ct_tal(output, masks[i])
+            elif modalities[i][0] == "mr":
+                _seg_losses[i] = self.mr_tal(output, masks[i])
+            else:
+                raise ValueError(f"Invalid modality {modalities[i][0]}")
+
+            # Domain Classifier branch
+            dom_pred_logits = self.dom_classifier(self.grl.apply(feature))
+            dom_true_label = torch.tensor([[m == "ct"] for m in modalities[i]], device="cuda") * 1.0
+            _adv_losses[i] = self.adv_loss(dom_pred_logits, dom_true_label)
+
+        seg_loss = _seg_losses[0] + _seg_losses[1]
+        seg_loss.backward(retain_graph=True)
+        adv_loss = _adv_losses[0] + _adv_losses[1]
         adv_loss.backward()
 
         self.optimizer.step()
@@ -261,20 +287,33 @@ class DANNTrainer:
 
         for step in train_pbar:
             module.train()
-            ct_batch = next(iter(ct_train_dtl))
-            mr_batch = next(iter(mr_train_dtl))
-            ct_image, ct_mask = ct_batch["image"].to(self.device), ct_batch["label"].to(self.device)
-            mr_image, mr_mask = mr_batch["image"].to(self.device), mr_batch["label"].to(self.device)
-            ## We gradually increase the value of lambda of grl as the training proceeds.
-            #    p = float(batch_idx + epoch_idx * len_dataloader) / (n_epoch * len_dataloader)
-            #    grl_lambda = 2. / (1. + np.exp(-10 * p)) - 1
+
+            # # v1
+            # ct_batch = next(iter(ct_train_dtl))
+            # mr_batch = next(iter(mr_train_dtl))
+            # ct_image, ct_mask = ct_batch["image"].to(self.device), ct_batch["label"].to(self.device)
+            # mr_image, mr_mask = mr_batch["image"].to(self.device), mr_batch["label"].to(self.device)
+            # ## We gradually increase the value of lambda of grl as the training proceeds.
+            # #    p = float(batch_idx + epoch_idx * len_dataloader) / (n_epoch * len_dataloader)
+            # #    grl_lambda = 2. / (1. + np.exp(-10 * p)) - 1
+            # p = float(step) / self.max_iter
+            # grl_lambda = 2.0 / (1.0 + np.exp(-10 * p)) - 1
+            # seg_loss, adv_loss = module.update(ct_image, ct_mask, mr_image, mr_mask, alpha=grl_lambda)
+
+            # v2
+            batch1 = next(iter(ct_train_dtl)) if np.random.random(1) < 0.5 else next(iter(mr_train_dtl))
+            batch2 = next(iter(ct_train_dtl)) if np.random.random(1) < 0.5 else next(iter(mr_train_dtl))
+            images = batch1["image"].to(self.device), batch2["image"].to(self.device)
+            masks = batch1["label"].to(self.device), batch2["label"].to(self.device)
+            modalities = batch1["modality"], batch2["modality"]
             p = float(step) / self.max_iter
             grl_lambda = 2.0 / (1.0 + np.exp(-10 * p)) - 1
-            seg_loss, adv_loss = module.update(ct_image, ct_mask, mr_image, mr_mask, alpha=grl_lambda)
+            seg_loss, adv_loss = module.update_v2(images, masks, modalities, alpha=grl_lambda)
+
             writer.add_scalar(f"train/seg_loss", seg_loss, step)
             writer.add_scalar(f"train/adv_loss", adv_loss, step)
             train_pbar.set_description(
-                f"Training ({step} / {self.max_iter} Steps) (seg_loss={seg_loss:2.5f}, adv_loss={adv_loss:2.5f})"
+                f"Training ({step} / {self.max_iter} Steps) ({modalities[0][0]},{modalities[1][0]}) (seg_loss={seg_loss:2.5f}, adv_loss={adv_loss:2.5f})"
             )
             if ((step + 1) % self.eval_step == 0) or (step == self.max_iter - 1):
                 val_metric = self.validation(module, val_dataloader, global_step=step)
