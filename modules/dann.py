@@ -18,6 +18,12 @@ from tqdm import tqdm
 
 from lib.loss.target_adaptive_loss import TargetAdaptiveLoss
 from lib.utils.validation import get_output_and_mask
+from modules.mixins.dann_mixins import (
+    BaseMixin,
+    ConterfactucalAlignmentMixin,
+    PredictDomainEquivalenceMixin,
+    RandomPairInputMixin,
+)
 from networks.unet.unet3d import BasicUNetDecoder, BasicUNetEncoder
 from networks.uxnet3d.network_backbone import UXNETDecoder, UXNETEncoder
 
@@ -38,7 +44,7 @@ class GradientReversalLayer(torch.autograd.Function):
         return -grad_output
 
 
-class DANNModule(nn.Module):
+class DANNModule(PredictDomainEquivalenceMixin):
     def __init__(
         self,
         out_channels: int,
@@ -59,20 +65,24 @@ class DANNModule(nn.Module):
         self.mr_foreground = mr_foreground
         self.mr_background = list(set(range(1, self.num_classes)) - set(mr_foreground)) if mr_foreground else None
         self.default_forward_branch = default_forward_branch
+        self.data_loading_mode = "paired"
 
-        self.feat_extractor = BasicUNetEncoder(in_channels=1)
-        self.predictor = BasicUNetDecoder(out_channels=out_channels)
         self.grl = GradientReversalLayer(alpha=1)
-        self.dom_classifier = nn.Sequential(
-            nn.Conv3d(256, 128, kernel_size=3, padding=1),
-            nn.MaxPool3d(kernel_size=2),
-            nn.ReLU(),
-            nn.Conv3d(128, 64, kernel_size=3, padding=1),
-            nn.MaxPool3d(kernel_size=2),
-            nn.ReLU(),
-            nn.Flatten(),
-            nn.Linear(64, 1),
-        )
+        if not getattr(self, "feat_extractor", False):
+            self.feat_extractor = BasicUNetEncoder(in_channels=1)
+        if not getattr(self, "predictor", False):
+            self.predictor = BasicUNetDecoder(out_channels=out_channels)
+        if not getattr(self, "dom_classifier", False):
+            self.dom_classifier = nn.Sequential(
+                nn.Conv3d(256, 128, kernel_size=3, padding=1),
+                nn.MaxPool3d(kernel_size=2),
+                nn.ReLU(),
+                nn.Conv3d(128, 64, kernel_size=3, padding=1),
+                nn.MaxPool3d(kernel_size=2),
+                nn.ReLU(),
+                nn.Flatten(),
+                nn.Linear(64, 1),
+            )
 
         # Optimizer
         params = (
@@ -111,70 +121,37 @@ class DANNModule(nn.Module):
             dom_pred_logits = self.dom_classifier(self.grl.apply(feature))
             return dom_pred_logits
 
-    def update(self, ct_image, ct_mask, mr_image, mr_mask, alpha=1):
-        """update_v1:
-        Every time a CT image and an MR image are loaded to
-        update the parameters of the module.
-        """
-        self.grl.set_alpha(alpha)
-        self.optimizer.zero_grad()
+    def update(self, images, masks, modalities, alpha):
+        if getattr(self, "update", False):
+            return super().update(images, masks, modalities, alpha)
+        else:
+            self.grl.set_alpha(alpha)
+            self.optimizer.zero_grad()
+            ct_image, ct_mask = images[0], masks[0]
+            mr_image, mr_mask = images[1], masks[1]
 
-        # Predictor branch
-        ct_skip_outputs, ct_feature = self.feat_extractor(ct_image)
-        ct_output = self.predictor((ct_skip_outputs, ct_feature))
-        mr_skip_outputs, mr_feature = self.feat_extractor(mr_image)
-        mr_output = self.predictor((mr_skip_outputs, mr_feature))
-
-        ct_seg_loss = self.ct_tal(ct_output, ct_mask)
-        mr_seg_loss = self.mr_tal(mr_output, mr_mask)
-        seg_loss = ct_seg_loss + mr_seg_loss
-        seg_loss.backward(retain_graph=True)
-
-        # Domain Classifier branch: predict domain label
-        ct_dom_pred_logits = self.dom_classifier(self.grl.apply(ct_feature))
-        mr_dom_pred_logits = self.dom_classifier(self.grl.apply(mr_feature))
-        ct_shape, mr_shape = ct_dom_pred_logits.shape, mr_dom_pred_logits.shape
-        dom_pred_logits = torch.cat([ct_dom_pred_logits, mr_dom_pred_logits])
-        dom_true_label = torch.cat((ones(ct_shape, device="cuda"), zeros(mr_shape, device="cuda")))
-        adv_loss = self.adv_loss(dom_pred_logits, dom_true_label)
-        adv_loss.backward()
-
-        self.optimizer.step()
-        return seg_loss.item(), adv_loss.item()
-
-    def update_v2(self, images, masks, modalities, alpha):
-        """update_v2:
-        Each time 2 random images (whose modality are not specified)
-        are loaded to update network's parameters.
-        """
-        self.grl.set_alpha(alpha)
-        self.optimizer.zero_grad()
-
-        _seg_losses = {}
-        _adv_losses = {}
-        for i in [0, 1]:
             # Predictor branch
-            skip_outputs, feature = self.feat_extractor(images[i])
-            output = self.predictor((skip_outputs, feature))
-            if modalities[i][0] == "ct":
-                _seg_losses[i] = self.ct_tal(output, masks[i])
-            elif modalities[i][0] == "mr":
-                _seg_losses[i] = self.mr_tal(output, masks[i])
-            else:
-                raise ValueError(f"Invalid modality {modalities[i][0]}")
+            ct_skip_outputs, ct_feature = self.feat_extractor(ct_image)
+            ct_output = self.predictor((ct_skip_outputs, ct_feature))
+            mr_skip_outputs, mr_feature = self.feat_extractor(mr_image)
+            mr_output = self.predictor((mr_skip_outputs, mr_feature))
 
-            # Domain Classifier branch
-            dom_pred_logits = self.dom_classifier(self.grl.apply(feature))
-            dom_true_label = torch.tensor([[m == "ct"] for m in modalities[i]], device="cuda") * 1.0
-            _adv_losses[i] = self.adv_loss(dom_pred_logits, dom_true_label)
+            ct_seg_loss = self.ct_tal(ct_output, ct_mask)
+            mr_seg_loss = self.mr_tal(mr_output, mr_mask)
+            seg_loss = ct_seg_loss + mr_seg_loss
+            seg_loss.backward(retain_graph=True)
 
-        seg_loss = _seg_losses[0] + _seg_losses[1]
-        seg_loss.backward(retain_graph=True)
-        adv_loss = _adv_losses[0] + _adv_losses[1]
-        adv_loss.backward()
+            # Domain Classifier branch: predict domain label
+            ct_dom_pred_logits = self.dom_classifier(self.grl.apply(ct_feature))
+            mr_dom_pred_logits = self.dom_classifier(self.grl.apply(mr_feature))
+            ct_shape, mr_shape = ct_dom_pred_logits.shape, mr_dom_pred_logits.shape
+            dom_pred_logits = torch.cat([ct_dom_pred_logits, mr_dom_pred_logits])
+            dom_true_label = torch.cat((ones(ct_shape, device="cuda"), zeros(mr_shape, device="cuda")))
+            adv_loss = self.adv_loss(dom_pred_logits, dom_true_label)
+            adv_loss.backward()
 
-        self.optimizer.step()
-        return seg_loss.item(), adv_loss.item()
+            self.optimizer.step()
+            return seg_loss.item(), adv_loss.item()
 
     def inference(self, x, roi_size=(96, 96, 96), sw_batch_size=2):
         # Using sliding windows
@@ -285,31 +262,24 @@ class DANNTrainer:
         writer = SummaryWriter(log_dir=self.checkpoint_dir)
         writer.add_scalar(f"train/{self.metric.__class__.__name__}", 0, 0)  # validation metric starts from zero
 
+        data_loading_mode = getattr(module, "data_loading_mode", "paired")  # "paired" or "random"
         for step in train_pbar:
             module.train()
-
-            # # v1
-            # ct_batch = next(iter(ct_train_dtl))
-            # mr_batch = next(iter(mr_train_dtl))
-            # ct_image, ct_mask = ct_batch["image"].to(self.device), ct_batch["label"].to(self.device)
-            # mr_image, mr_mask = mr_batch["image"].to(self.device), mr_batch["label"].to(self.device)
-            # ## We gradually increase the value of lambda of grl as the training proceeds.
-            # #    p = float(batch_idx + epoch_idx * len_dataloader) / (n_epoch * len_dataloader)
-            # #    grl_lambda = 2. / (1. + np.exp(-10 * p)) - 1
-            # p = float(step) / self.max_iter
-            # grl_lambda = 2.0 / (1.0 + np.exp(-10 * p)) - 1
-            # seg_loss, adv_loss = module.update(ct_image, ct_mask, mr_image, mr_mask, alpha=grl_lambda)
-
-            # v2
-            batch1 = next(iter(ct_train_dtl)) if np.random.random(1) < 0.5 else next(iter(mr_train_dtl))
-            batch2 = next(iter(ct_train_dtl)) if np.random.random(1) < 0.5 else next(iter(mr_train_dtl))
+            if data_loading_mode == "paired":
+                batch1 = next(iter(ct_train_dtl))
+                batch2 = next(iter(mr_train_dtl))
+            if data_loading_mode == "random":
+                batch1 = next(iter(ct_train_dtl)) if np.random.random(1) < 0.5 else next(iter(mr_train_dtl))
+                batch2 = next(iter(ct_train_dtl)) if np.random.random(1) < 0.5 else next(iter(mr_train_dtl))
             images = batch1["image"].to(self.device), batch2["image"].to(self.device)
             masks = batch1["label"].to(self.device), batch2["label"].to(self.device)
             modalities = batch1["modality"], batch2["modality"]
+            ## We gradually increase the value of lambda of grl as the training proceeds.
+            #    p = float(batch_idx + epoch_idx * len_dataloader) / (n_epoch * len_dataloader)
+            #    grl_lambda = 2. / (1. + np.exp(-10 * p)) - 1
             p = float(step) / self.max_iter
             grl_lambda = 2.0 / (1.0 + np.exp(-10 * p)) - 1
-            seg_loss, adv_loss = module.update_v2(images, masks, modalities, alpha=grl_lambda)
-
+            seg_loss, adv_loss = module.update(images, masks, modalities, alpha=grl_lambda)
             writer.add_scalar(f"train/seg_loss", seg_loss, step)
             writer.add_scalar(f"train/adv_loss", adv_loss, step)
             train_pbar.set_description(
