@@ -210,7 +210,7 @@ class DANN2Module(nn.Module):
 
         self.optimizer.step()
         return seg_loss.item(), adv_loss.item()
-    
+
     def update_v3(self, images, masks, modalities, alpha):
         self.grl.set_alpha(alpha)
         self.optimizer.zero_grad()
@@ -224,6 +224,7 @@ class DANN2Module(nn.Module):
 
             def func(x):
                 return torch.squeeze(gap(x))
+
             for patch in [0, 1]:
                 jacobs[patch] = torch.squeeze(torch.autograd.functional.jacobian(func, output[[patch]]))
             return torch.mean(jacobs, dim=(3, 4, 5))
