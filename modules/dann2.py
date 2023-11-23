@@ -69,10 +69,10 @@ class DANN2Module(nn.Module):
         self.dom_classifier = nn.Sequential(
             nn.Conv3d(512, 128, kernel_size=3, padding=1),
             nn.MaxPool3d(kernel_size=2),
-            nn.ReLU(),
+            nn.ReLU(0.01),
             nn.Conv3d(128, 64, kernel_size=3, padding=1),
             nn.MaxPool3d(kernel_size=2),
-            nn.ReLU(),
+            nn.ReLU(0.01),
             nn.Flatten(),
             nn.Linear(64, 1),
         )
@@ -123,8 +123,9 @@ class DANN2Module(nn.Module):
             output = self.predictor((skip_outputs, feature))
             return output
         if branch == 1:
-            dom_pred_logits = self.dom_classifier(self.grl.apply(feature))
-            return dom_pred_logits
+            feature_cat = torch.cat([feature, feature], dim=1)
+            pred_modal_equiv = self.dom_classifier(self.grl.apply(feature_cat))
+            return pred_modal_equiv
 
     def update(self, images, masks, modalities, alpha):
         self.grl.set_alpha(alpha)
@@ -171,6 +172,60 @@ class DANN2Module(nn.Module):
 
             for patch in [0, 1]:
                 jacobs[patch] = torch.squeeze(torch.autograd.functional.jacobian(func(patch), feature[[patch]]))
+            return torch.mean(jacobs, dim=(3, 4, 5))
+
+        def get_cam(feature, counterfactual=False):
+            weight = get_cam_weight(feature).to("cuda")
+            cam = einsum(weight, feature, "n cls ch, n ch h w d -> n cls h w d")
+            if counterfactual:
+                return -F.relu(cam)
+            else:
+                return F.relu(cam)
+
+        # Predictor branch
+        _features = {}
+        _seg_losses = {}
+        _cams = {}
+        for i in [0, 1]:
+            skip_outputs, _features[i] = self.feat_extractor(images[i])
+            output = self.predictor((skip_outputs, _features[i]))
+            _cams[i] = get_cam(_features[i], counterfactual=(i == 1 and modalities[0] != modalities[1]))
+
+            if modalities[i][0] == "ct":
+                _seg_losses[i] = self.ct_tal(output, masks[i])
+            elif modalities[i][0] == "mr":
+                _seg_losses[i] = self.mr_tal(output, masks[i])
+            else:
+                raise ValueError(f"Invalid modality {modalities[i][0]}")
+            _seg_losses[i].backward(retain_graph=True)
+        seg_loss = _seg_losses[0] + _seg_losses[1]
+
+        # Domain Classifier branch: predict domain equivalent
+        mod_equiv = torch.tensor([[m0 == m1] for m0, m1 in zip(*modalities)], device="cuda") * 1.0
+        # features = torch.cat([_features[0], _features[1]], dim=1)
+        cams = torch.cat([_cams[0], _cams[1]], dim=1)
+        pred_modal_equiv = self.dom_classifier(self.grl.apply(cams))
+        adv_loss = self.adv_loss(pred_modal_equiv, mod_equiv)
+        adv_loss.backward()
+
+        self.optimizer.step()
+        return seg_loss.item(), adv_loss.item()
+    
+    def update_v3(self, images, masks, modalities, alpha):
+        self.grl.set_alpha(alpha)
+        self.optimizer.zero_grad()
+
+        def get_skips(patch):
+            return tuple([so[[patch]] for so in skip_outputs])
+
+        def get_cam_weight(output):
+            jacobs = torch.empty((2, self.num_classes, *output.shape[1:]))  # dim = (2, class, channel, h, w, d)
+            gap = torch.nn.AvgPool3d(kernel_size=96)
+
+            def func(x):
+                return torch.squeeze(gap(x))
+            for patch in [0, 1]:
+                jacobs[patch] = torch.squeeze(torch.autograd.functional.jacobian(func, output[[patch]]))
             return torch.mean(jacobs, dim=(3, 4, 5))
 
         def get_cam(feature, counterfactual=False):
@@ -329,7 +384,7 @@ class DANN2Trainer:
             #    grl_lambda = 2. / (1. + np.exp(-10 * p)) - 1
             p = float(step) / self.max_iter
             grl_lambda = 2.0 / (1.0 + np.exp(-10 * p)) - 1
-            seg_loss, adv_loss = module.update_v2(images, masks, mods, alpha=grl_lambda)
+            seg_loss, adv_loss = module.update(images, masks, mods, alpha=grl_lambda)
             writer.add_scalar(f"train/seg_loss", seg_loss, step)
             writer.add_scalar(f"train/adv_loss", adv_loss, step)
             train_pbar.set_description(
