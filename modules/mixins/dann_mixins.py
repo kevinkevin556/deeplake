@@ -1,7 +1,7 @@
-# Mixin classes can be inherited to modify components of modules or 
-# alter the update process of neural network during training. 
-# 
-# Inheriting from a mixin class should be an exclusive method to 
+# Mixin classes can be inherited to modify components of modules or
+# alter the update process of neural network during training.
+#
+# Inheriting from a mixin class should be an exclusive method to
 # make changes to the pre-built modules in this repository.
 
 
@@ -14,13 +14,15 @@ from torch import nn
 class BaseMixin(nn.Module):
     pass
 
+
 class PredictDomainEquivalenceMixin(BaseMixin):
     """
-    Instead of predicting the modalities of the pair of images in each round,
-    predict whether two images drawn from the identical domain or not.
+    Description: Instead of predicting the modalities of the pair of images in each round,
+                 predict whether two images drawn from the identical domain or not.
 
-    Good.
+    Performance: Good.
     """
+
     def __init__(self):
         super().__init__()
         self.data_loading_mode = "random"
@@ -67,12 +69,12 @@ class PredictDomainEquivalenceMixin(BaseMixin):
 
 class ConterfactucalAlignmentMixin(BaseMixin):
     """
-    Align CAM and its counterfactual counterpart.
+    Description: Align CAM and its counterfactual counterpart.
 
-    Not an effective method for partially-supervised segmentation task
-    under domain shift.
+    Performance: Not an effective method for partially-supervised segmentation task
+                 under domain shift.
     """
-    
+
     def __init__(self):
         super().__init__()
         self.data_loading_mode = "random"
@@ -86,7 +88,7 @@ class ConterfactucalAlignmentMixin(BaseMixin):
             nn.Flatten(),
             nn.Linear(9, 1),
         )
-    
+
     def update(self, images, masks, modalities, alpha):
         self.grl.set_alpha(alpha)
         self.optimizer.zero_grad()
@@ -142,13 +144,15 @@ class ConterfactucalAlignmentMixin(BaseMixin):
         self.optimizer.step()
         return seg_loss.item(), adv_loss.item()
 
+
 class RandomPairInputMixin(BaseMixin):
     """
-    Each time 2 random images (whose modality are not specified)
-    are loaded to update network's parameters.
+    Description: Each time 2 random images (whose modality are not specified)
+                 are loaded to update network's parameters.
 
-    Not effective.
+    Performance:  Not effective.
     """
+
     def __init__(self):
         super().__init__()
         self.data_loading_mode = "random"
@@ -188,6 +192,82 @@ class RandomPairInputMixin(BaseMixin):
         seg_loss = _seg_losses[0] + _seg_losses[1]
         seg_loss.backward(retain_graph=True)
         adv_loss = _adv_losses[0] + _adv_losses[1]
+        adv_loss.backward()
+
+        self.optimizer.step()
+        return seg_loss.item(), adv_loss.item()
+
+
+class CAMPsudeoLabel(BaseMixin):
+    """
+    Desciption: Use from the last convolution layer as the psuedo label.
+
+    Performance: Unknown.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.data_loading_mode = "paired"
+        self.dom_classifier = nn.Sequential(
+            nn.Conv3d(256, 128, kernel_size=3, padding=1),
+            nn.MaxPool3d(kernel_size=2),
+            nn.ReLU(),
+            nn.Conv3d(128, 64, kernel_size=3, padding=1),
+            nn.MaxPool3d(kernel_size=2),
+            nn.ReLU(),
+            nn.Flatten(),
+            nn.Linear(64, 1),
+        )
+
+    def update(self, images, masks, modalities, alpha):
+        self.grl.set_alpha(alpha)
+        self.optimizer.zero_grad()
+
+        masks = list(masks)
+        cam_threshold = 0.2
+
+        def get_cam_weight(feature):
+            jacobs = torch.empty((2, self.num_classes, *feature.shape[1:]))  # dim = (2, class, channel, h, w, d)
+            gap = torch.nn.AvgPool3d(kernel_size=96)
+            for patch in [0, 1]:
+                jacobs[patch] = torch.squeeze(torch.autograd.functional.jacobian(gap, feature[[patch]]))
+            return torch.mean(jacobs, dim=(3, 4, 5))
+
+        def get_cam(feature):
+            weight = get_cam_weight(feature).to("cuda")
+            cam = einsum(weight, feature, "n cls ch, n ch h w d -> n cls h w d")
+            return F.relu(cam)
+
+        # Predictor branch
+        _features = {}
+        _seg_losses = {}
+        _dom_pred_logits = {}
+        for i in [0, 1]:
+            skip_outputs, _features[i] = self.feat_extractor(images[i])
+            output = self.predictor((skip_outputs, _features[i]))
+            cam = get_cam(output)[:, 1:]
+            cam *= cam > cam_threshold
+            masks[i] += torch.argmax(cam, dim=1, keepdim=True) * (masks[i] == 0)
+            if modalities[i][0] == "ct":
+                _seg_losses[i] = self.ct_tal(output, masks[i])
+            elif modalities[i][0] == "mr":
+                _seg_losses[i] = self.mr_tal(output, masks[i])
+            else:
+                raise ValueError(f"Invalid modality {modalities[i][0]}")
+            _seg_losses[i].backward(retain_graph=True)
+        seg_loss = _seg_losses[0] + _seg_losses[1]
+
+        # Domain Classifier branch: predict domain equivalent
+        for i in [0, 1]:
+            _dom_pred_logits[i] = self.dom_classifier(self.grl.apply(_features[i]))
+        dom_pred_logits = torch.cat([_dom_pred_logits[0], _dom_pred_logits[1]])
+        dom_true_label = torch.cat(
+            (
+                torch.ones(_dom_pred_logits[0].shape, device="cuda"),
+                torch.zeros(_dom_pred_logits[1].shape, device="cuda"),
+            )
+        )
+        adv_loss = self.adv_loss(dom_pred_logits, dom_true_label)
         adv_loss.backward()
 
         self.optimizer.step()
