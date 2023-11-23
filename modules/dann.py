@@ -44,7 +44,10 @@ class GradientReversalLayer(torch.autograd.Function):
         return -grad_output
 
 
-class DANNModule(PredictDomainEquivalenceMixin):
+Mixin = PredictDomainEquivalenceMixin
+
+
+class DANNModule(Mixin):
     def __init__(
         self,
         out_channels: int,
