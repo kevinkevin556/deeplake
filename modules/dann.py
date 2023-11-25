@@ -19,7 +19,7 @@ from lib.loss.target_adaptive_loss import TargetAdaptiveLoss
 from lib.utils.validation import get_output_and_mask
 from modules.mixins.dann_mixins import (
     BaseMixin,
-    CAMPsudeoLabel,
+    CAMPseudoLabel,
     ConterfactucalAlignmentMixin,
     PredictDomainEquivalenceMixin,
     RandomPairInputMixin,
@@ -44,7 +44,7 @@ class GradientReversalLayer(torch.autograd.Function):
         return -grad_output
 
 
-Mixin = CAMPsudeoLabel
+Mixin = CAMPseudoLabel
 
 
 class DANNModule(Mixin):

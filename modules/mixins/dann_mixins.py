@@ -199,7 +199,7 @@ class RandomPairInputMixin(BaseMixin):
         return seg_loss.item(), adv_loss.item()
 
 
-class CAMPsudeoLabel(BaseMixin):
+class CAMPseudoLabel(BaseMixin):
     """
     Desciption: Use from the last convolution layer as the psuedo label.
 
