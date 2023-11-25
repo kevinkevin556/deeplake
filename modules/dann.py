@@ -12,7 +12,6 @@ from monai.metrics import DiceMetric, Metric
 from torch import nn, ones, zeros
 from torch.nn import BCEWithLogitsLoss
 from torch.optim import SGD, Adam, AdamW
-from torch.utils.data import ConcatDataset
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
@@ -224,6 +223,7 @@ class DANNTrainer:
         val_metrics = []
         num_classes = module.num_classes
         background = {"ct": module.ct_background, "mr": module.mr_background}
+
         val_pbar = tqdm(data_iter, total=len(dataloader[0]) + len(dataloader[1]), dynamic_ncols=True)
         metric_name = self.metric.__class__.__name__
         train_val_desc = (
@@ -256,7 +256,9 @@ class DANNTrainer:
                 else:
                     val_pbar.set_description(simple_val_desc.format(val_on_partial, metric_name, batch_metric))
         mean_val_metric = np.mean(val_metrics)
-        return mean_val_metric
+        ct_val_metric = np.mean(val_metrics[: len(val_metrics) // 2])
+        mr_val_metric = np.mean(val_metrics[len(val_metrics) // 2 :])
+        return mean_val_metric, ct_val_metric, mr_val_metric
 
     def train(self, module, train_dataloader, val_dataloader):
         self.show_training_info(module, train_dataloader, val_dataloader)
@@ -290,14 +292,19 @@ class DANNTrainer:
                 f"Training ({step} / {self.max_iter} Steps) ({modalities[0][0]},{modalities[1][0]}) (seg_loss={seg_loss:2.5f}, adv_loss={adv_loss:2.5f})"
             )
             if ((step + 1) % self.eval_step == 0) or (step == self.max_iter - 1):
-                val_metric = self.validation(module, val_dataloader, global_step=step)
-                writer.add_scalar(f"train/{self.metric.__class__.__name__}", val_metric, step)
-                if val_metric > best_metric:
+                val_metrics = self.validation(module, val_dataloader, global_step=step)
+                mean_metric, ct_metric, mr_metric = val_metrics
+                writer.add_scalar(f"val/{self.metric.__class__.__name__}", mean_metric, step)
+                writer.add_scalar(f"val/ct", ct_metric, step)
+                writer.add_scalar(f"val/mr", mr_metric, step)
+                if mean_metric > best_metric:
                     module.save(self.checkpoint_dir)
-                    tqdm.write(f"Model saved! Validation: (New) {val_metric:2.7f} > (Old) {best_metric:2.7f}")
-                    best_metric = val_metric
+                    msg = f"\033[32mModel saved! Validation: (New) {mean_metric:2.7f} > (Old) {best_metric:2.7f}\033[0m"
+                    best_metric = mean_metric
                 else:
-                    tqdm.write(f"No improvement. Validation: (New) {val_metric:2.7f} <= (Old) {best_metric:2.7f}")
+                    msg = f"\033[31mNo improvement. Validation: (New) {mean_metric:2.7f} <= (Old) {best_metric:2.7f}\033[0m"
+                msg += f" (CT) {ct_metric:2.7f} (MR) {mr_metric:2.7f}"
+                tqdm.write(msg)
 
 
 class DANNInitializer:
