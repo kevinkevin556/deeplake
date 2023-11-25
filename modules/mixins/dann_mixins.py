@@ -8,6 +8,7 @@
 import torch
 import torch.nn.functional as F
 from einops import einsum
+from monai.losses import DiceCELoss
 from torch import nn
 
 
@@ -218,13 +219,14 @@ class CAMPsudeoLabel(BaseMixin):
             nn.Flatten(),
             nn.Linear(64, 1),
         )
+        self.dice2loss = DiceCELoss(to_onehot_y=True, softmax=True)
 
-    def update(self, images, masks, modalities, alpha):
+    def update(self, images, masks, modalities, alpha, beta=0.75, gamma=0.2):
         self.grl.set_alpha(alpha)
-        self.optimizer.zero_grad()
+        cam_threshold = gamma
 
         masks = list(masks)
-        cam_threshold = 0.2
+        self.optimizer.zero_grad()
 
         def get_cam_weight(feature):
             jacobs = torch.empty((2, self.num_classes, *feature.shape[1:]))  # dim = (2, class, channel, h, w, d)
@@ -249,9 +251,9 @@ class CAMPsudeoLabel(BaseMixin):
             cam *= cam > cam_threshold
             masks[i] += torch.argmax(cam, dim=1, keepdim=True) * (masks[i] == 0)
             if modalities[i][0] == "ct":
-                _seg_losses[i] = self.ct_tal(output, masks[i])
+                _seg_losses[i] = self.ct_tal(output, masks[i]) + beta * self.dice2loss(output, masks[i])
             elif modalities[i][0] == "mr":
-                _seg_losses[i] = self.mr_tal(output, masks[i])
+                _seg_losses[i] = self.mr_tal(output, masks[i]) + beta * self.dice2loss(output, masks[i])
             else:
                 raise ValueError(f"Invalid modality {modalities[i][0]}")
             _seg_losses[i].backward(retain_graph=True)
