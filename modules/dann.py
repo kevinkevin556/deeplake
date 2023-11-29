@@ -124,9 +124,9 @@ class DANNModule(Mixin):
             dom_pred_logits = self.dom_classifier(self.grl.apply(feature))
             return dom_pred_logits
 
-    def update(self, images, masks, modalities, alpha):
+    def update(self, images, masks, modalities, alpha, **kwargs):
         if getattr(self, "update", False):
-            return super().update(images, masks, modalities, alpha)
+            return super().update(images, masks, modalities, alpha, **kwargs)
         else:
             self.grl.set_alpha(alpha)
             self.optimizer.zero_grad()
@@ -220,7 +220,8 @@ class DANNTrainer:
     def validation(self, module, dataloader, global_step=None):
         module.eval()
         data_iter = itertools.chain(*dataloader)
-        val_metrics = []
+        ct_val_metrics = []
+        mr_val_metrics = []
         num_classes = module.num_classes
         background = {"ct": module.ct_background, "mr": module.mr_background}
 
@@ -246,7 +247,12 @@ class DANNTrainer:
                 # Compute validation metrics
                 self.metric(y_pred=outputs, y=masks)
                 batch_metric = self.metric.aggregate().item()
-                val_metrics.append(batch_metric)
+                if modality_label == "ct":
+                    ct_val_metrics.append(batch_metric)
+                elif modality_label == "mr":
+                    mr_val_metrics.append(batch_metric)
+                else:
+                    raise ValueError("Invalid modality.")
                 self.metric.reset()
                 # Update progressbar
                 if global_step is not None:
@@ -255,9 +261,9 @@ class DANNTrainer:
                     )
                 else:
                     val_pbar.set_description(simple_val_desc.format(val_on_partial, metric_name, batch_metric))
-        mean_val_metric = np.mean(val_metrics)
-        ct_val_metric = np.mean(val_metrics[: len(val_metrics) // 2])
-        mr_val_metric = np.mean(val_metrics[len(val_metrics) // 2 :])
+        mean_val_metric = np.mean(ct_val_metrics + mr_val_metrics)
+        ct_val_metric = np.mean(ct_val_metrics)
+        mr_val_metric = np.mean(mr_val_metrics)
         return mean_val_metric, ct_val_metric, mr_val_metric
 
     def train(self, module, train_dataloader, val_dataloader):
@@ -297,12 +303,14 @@ class DANNTrainer:
                 writer.add_scalar(f"val/{self.metric.__class__.__name__}", mean_metric, step)
                 writer.add_scalar(f"val/ct", ct_metric, step)
                 writer.add_scalar(f"val/mr", mr_metric, step)
-                if mean_metric > best_metric:
+
+                val_metric = min(ct_metric, mr_metric)
+                if val_metric > best_metric:
                     module.save(self.checkpoint_dir)
-                    msg = f"\033[32mModel saved! Validation: (New) {mean_metric:2.7f} > (Old) {best_metric:2.7f}\033[0m"
-                    best_metric = mean_metric
+                    msg = f"\033[32mModel saved! Validation: (New) {val_metric:2.7f} > (Old) {best_metric:2.7f}\033[0m"
+                    best_metric = val_metric
                 else:
-                    msg = f"\033[31mNo improvement. Validation: (New) {mean_metric:2.7f} <= (Old) {best_metric:2.7f}\033[0m"
+                    msg = f"\033[31mNo improvement. Validation: (New) {val_metric:2.7f} <= (Old) {best_metric:2.7f}\033[0m"
                 msg += f" (CT) {ct_metric:2.7f} (MR) {mr_metric:2.7f}"
                 tqdm.write(msg)
 

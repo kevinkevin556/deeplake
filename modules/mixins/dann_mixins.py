@@ -11,6 +11,8 @@ from einops import einsum
 from monai.losses import DiceCELoss
 from torch import nn
 
+from lib.loss.target_adaptive_loss import TargetAdaptiveLoss
+
 
 class BaseMixin(nn.Module):
     pass
@@ -250,12 +252,18 @@ class CAMPseudoLabel(BaseMixin):
             cam = get_cam(output)[:, 1:]
             cam *= cam > cam_threshold
             masks[i] += torch.argmax(cam, dim=1, keepdim=True) * (masks[i] == 0)
+            cam_pseudo_label = torch.argmax(cam, dim=1, keepdim=True)
+            cam_foreground = set(torch.unique(cam_pseudo_label).cpu().numpy()) - {0}
+
             if modalities[i][0] == "ct":
-                _seg_losses[i] = self.ct_tal(output, masks[i]) + beta * self.dice2loss(output, masks[i])
+                foreground = list(set(self.ct_foreground) | cam_foreground)
             elif modalities[i][0] == "mr":
-                _seg_losses[i] = self.mr_tal(output, masks[i]) + beta * self.dice2loss(output, masks[i])
+                foreground = list(set(self.mr_foreground) | cam_foreground)
             else:
                 raise ValueError(f"Invalid modality {modalities[i][0]}")
+
+            tal = TargetAdaptiveLoss(self.num_classes, foreground)
+            _seg_losses[i] = tal(output, masks[i])
             _seg_losses[i].backward(retain_graph=True)
         seg_loss = _seg_losses[0] + _seg_losses[1]
 
