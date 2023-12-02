@@ -160,7 +160,8 @@ class SegmentationTrainer:
 
     def validation(self, module, dataloader, global_step=None, **kwargs):
         module.eval()
-        val_metrics = []
+        ct_val_metrics = []
+        mr_val_metrics = []
         val_pbar = tqdm(dataloader, dynamic_ncols=True)
         metric_name = self.metric.__class__.__name__
         train_val_desc = (
@@ -174,18 +175,23 @@ class SegmentationTrainer:
             for batch in val_pbar:
                 # Infer, decollate data into list of samples, and proprocess both predictions and labels
                 images, masks = batch["image"].to(self.device), batch["label"].to(self.device)
-                modality = batch["modality"][0]
+                modality_label = batch["modality"][0]
                 infer_out = module.inference(images)
                 samples = decollate_batch({"prediction": infer_out, "ground_truth": masks})
                 if self.partially_labelled and (global_step is not None):
-                    background_class = list(self.data_info["bg"][modality].keys())
+                    background_class = list(self.data_info["bg"][modality_label].keys())
                 else:
                     background_class = None
                 outputs, masks = get_output_and_mask(samples, self.num_classes, background_class)
                 # Compute validation metrics
                 self.metric(y_pred=outputs, y=masks)
                 batch_metric = self.metric.aggregate().item()
-                val_metrics.append(batch_metric)
+                if modality_label == "ct":
+                    ct_val_metrics.append(batch_metric)
+                elif modality_label == "mr":
+                    mr_val_metrics.append(batch_metric)
+                else:
+                    raise ValueError("Invalid modality.")
                 self.metric.reset()
                 # Update progressbar
                 if global_step is not None:
@@ -194,8 +200,10 @@ class SegmentationTrainer:
                     )
                 else:
                     val_pbar.set_description(simple_val_desc.format(val_on_partial, metric_name, batch_metric))
-        mean_val_metric = np.mean(val_metrics)
-        return mean_val_metric
+        mean_val_metric = np.mean(ct_val_metrics + mr_val_metrics)
+        ct_val_metric = np.mean(ct_val_metrics)
+        mr_val_metric = np.mean(mr_val_metrics)
+        return mean_val_metric, ct_val_metric, mr_val_metric
 
     def train(self, module, train_dataloader, val_dataloader):
         self.show_training_info(module, train_dataloader, val_dataloader)
@@ -221,14 +229,21 @@ class SegmentationTrainer:
             writer.add_scalar(f"train/{module.criterion.__class__.__name__}", loss, step)
             # Validation
             if ((step + 1) % self.eval_step == 0) or (step == self.max_iter - 1):
-                val_metric = self.validation(module, val_dataloader, global_step=step + 1)
-                writer.add_scalar(f"train/{self.metric.__class__.__name__}", val_metric, step)
+                val_metrics = self.validation(module, val_dataloader, global_step=step)
+                mean_metric, ct_metric, mr_metric = val_metrics
+                writer.add_scalar(f"val/{self.metric.__class__.__name__}", mean_metric, step)
+                writer.add_scalar(f"val/ct", ct_metric, step)
+                writer.add_scalar(f"val/mr", mr_metric, step)
+
+                val_metric = min(ct_metric, mr_metric)
                 if val_metric > best_metric:
                     module.save(self.checkpoint_dir)
-                    tqdm.write(f"Model saved! Validation: (New) {val_metric:2.7f} > (Old) {best_metric:2.7f}")
+                    msg = f"\033[32mModel saved! Validation: (New) {val_metric:2.7f} > (Old) {best_metric:2.7f}\033[0m"
                     best_metric = val_metric
                 else:
-                    tqdm.write(f"No improvement. Validation: (New) {val_metric:2.7f} <= (Old) {best_metric:2.7f}")
+                    msg = f"\033[31mNo improvement. Validation: (New) {val_metric:2.7f} <= (Old) {best_metric:2.7f}\033[0m"
+                msg += f" (CT) {ct_metric:2.7f} (MR) {mr_metric:2.7f}"
+                tqdm.write(msg)
 
 
 def concat(dataset):
