@@ -14,6 +14,7 @@ from medaset.amos import (
     simple_amos_train_transforms,
     simple_amos_val_transforms,
 )
+from medaset.lake import SMATDataset, smat_ct_transforms, smat_mr_transforms
 from monai.utils import set_determinism
 from rich_argparse import RichHelpFormatter
 from torch.utils.data import ConcatDataset
@@ -32,10 +33,6 @@ modules = {
     },
     "dann": {
         "initializer": DANNInitializer,
-        "return_modality_dataset": True,
-    },
-    "dann2": {
-        "initializer": DANN2Initializer,
         "return_modality_dataset": True,
     },
     "co_training": {
@@ -74,6 +71,22 @@ datasets = {
         "bg": {
             "ct": {i: 0 for i in range(1, SimpleAMOSDataset.num_classes) if i % 2 == 0},
             "mr": {i: 0 for i in range(1, SimpleAMOSDataset.num_classes) if i % 2 == 1},
+        },
+    },
+    "smat": {
+        "name": "SMAT",
+        "class": SMATDataset,
+        "train_transforms": None,
+        "val_transforms": None,
+        "num_classes": SMATDataset.num_classes,
+        # CT provides SAT, MR provides TSM and VAT
+        "fg": {
+            "ct": [i for i in [3]],
+            "mr": [i for i in [1, 2]],
+        },
+        "bg": {
+            "ct": {i: 0 for i in [1, 2]},
+            "mr": {i: 0 for i in [3]},
         },
     },
 }
@@ -161,6 +174,9 @@ def get_args():
         "--eval_step", type=int, default=100, help="Set the frequency at which validation is performed during training."
     )
     parser.add_argument("--deterministic", action="store_true", help="Enable deterministic training.")
+    # Inference options
+    parser.add_argument("--infer_roi_size", type=int, nargs="+", help="Roi size of sliding window inference.")
+    parser.add_argument("--infer_batch_size", type=int, help="Batch number of sliding window inference.")
     # Developer mode options
     parser.add_argument(
         "--alpha",
@@ -295,10 +311,10 @@ def main():
 
     ## Parameters
     # Data
-    root = config["path"]["root"]
+    dataset = args.dataset
+    root = config[dataset]["root"]
     output = config["path"]["output"]
     debug = config["path"]["debug"]
-    dataset = args.dataset
     modality = args.modality  # {"ct", "mr", "ct+mr"}
     partially_labelled = args.partially_labelled  # {True, False}
     holdout_ratio = args.holdout_ratio
@@ -318,6 +334,10 @@ def main():
     deterministic = args.deterministic
     alpha = args.alpha
     beta = args.beta
+
+    # Inference
+    infer_roi_size = args.infer_roi_size
+    infer_batch_size = args.infer_batch_size
 
     # Efficiency
     cache_rate = args.cache_rate
@@ -353,6 +373,8 @@ def main():
         loss=loss,
         optim=optim,
         lr=lr,
+        roi_size=infer_roi_size,
+        sw_batch_size=infer_batch_size,
         data_info=data_info,
         modality=modality,
         partially_labelled=partially_labelled,
