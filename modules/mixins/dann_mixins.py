@@ -11,7 +11,8 @@ from einops import einsum
 from monai.losses import DiceCELoss
 from torch import nn
 
-from lib.loss.target_adaptive_loss import TargetAdaptiveLoss
+from lib.loss.target_adaptative_loss import TargetAdaptativeLoss
+from networks.unet.unet3d import BasicUNetDecoder, BasicUNetEncoder
 
 
 class BaseMixin(nn.Module):
@@ -262,7 +263,7 @@ class CAMPseudoLabel(BaseMixin):
             else:
                 raise ValueError(f"Invalid modality {modalities[i][0]}")
 
-            tal = TargetAdaptiveLoss(self.num_classes, foreground)
+            tal = TargetAdaptativeLoss(self.num_classes, foreground)
             _seg_losses[i] = tal(output, masks[i])
             _seg_losses[i].backward(retain_graph=True)
         seg_loss = _seg_losses[0] + _seg_losses[1]
@@ -282,3 +283,21 @@ class CAMPseudoLabel(BaseMixin):
 
         self.optimizer.step()
         return seg_loss.item(), adv_loss.item()
+
+
+class BasicUNet2dMixin(BaseMixin):
+    def __init__(self):
+        super().__init__()
+        self.data_loading_mode = "paired"
+        self.feat_extractor = BasicUNetEncoder(spatial_dims=2, in_channels=1, features=(64, 128, 256, 512, 1024, 128))
+        self.predictor = BasicUNetDecoder(spatial_dims=2, out_channels=4, features=(64, 128, 256, 512, 1024, 128))
+        self.dom_classifier = nn.Sequential(
+            nn.Conv2d(1024, 256, kernel_size=3, padding=1),
+            nn.MaxPool2d(kernel_size=2),
+            nn.ReLU(),
+            nn.Conv2d(256, 64, kernel_size=3, padding=1),
+            nn.MaxPool2d(kernel_size=2),
+            nn.ReLU(),
+            nn.Flatten(),
+            nn.Linear(4096, 1),
+        )
