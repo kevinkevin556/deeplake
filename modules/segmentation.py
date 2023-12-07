@@ -18,7 +18,7 @@ from torch.utils.data import ConcatDataset
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
-from lib.loss.target_adaptive_loss import TargetAdaptiveLoss
+from lib.loss.target_adaptative_loss import TargetAdaptativeLoss
 from lib.utils.validation import get_output_and_mask
 from networks.uxnet3d.network_backbone import UXNETDecoder, UXNETEncoder
 
@@ -274,10 +274,10 @@ class SegmentationInitializer:
         if loss != "tal":
             criterion = DiceCELoss(include_background=True, to_onehot_y=True, softmax=True)
         elif modality in ["ct", "mr"]:
-            criterion = TargetAdaptiveLoss(data_info["num_classes"], data_info["fg"][modality], device)
+            criterion = TargetAdaptativeLoss(data_info["num_classes"], data_info["fg"][modality], device)
         else:
-            ct_criterion = TargetAdaptiveLoss(data_info["num_classes"], data_info["fg"]["ct"], device)
-            mr_criterion = TargetAdaptiveLoss(data_info["num_classes"], data_info["fg"]["mr"], device)
+            ct_criterion = TargetAdaptativeLoss(data_info["num_classes"], data_info["fg"]["ct"], device)
+            mr_criterion = TargetAdaptativeLoss(data_info["num_classes"], data_info["fg"]["mr"], device)
             criterion = (ct_criterion, mr_criterion)
         module = SegmentationModule(
             out_channels=out_channels,
