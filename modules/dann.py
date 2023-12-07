@@ -15,10 +15,11 @@ from torch.optim import SGD, Adam, AdamW
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from lib.loss.target_adaptive_loss import TargetAdaptiveLoss
+from lib.loss.target_adaptative_loss import TargetAdaptativeLoss
 from lib.utils.validation import get_output_and_mask
 from modules.mixins.dann_mixins import (
     BaseMixin,
+    BasicUNet2dMixin,
     CAMPseudoLabel,
     ConterfactucalAlignmentMixin,
     PredictDomainEquivalenceMixin,
@@ -44,7 +45,8 @@ class GradientReversalLayer(torch.autograd.Function):
         return -grad_output
 
 
-Mixin = CAMPseudoLabel
+# Mixin = nn.Module  # 3d
+Mixin = BasicUNet2dMixin  # 2d
 
 
 class DANNModule(Mixin):
@@ -52,6 +54,8 @@ class DANNModule(Mixin):
         self,
         out_channels: int,
         num_classes: int,
+        roi_size: tuple,
+        sw_batch_size: int,
         ct_foreground: Optional[list] = None,
         mr_foreground: Optional[list] = None,
         optimizer: str = "AdamW",
@@ -68,7 +72,10 @@ class DANNModule(Mixin):
         self.mr_foreground = mr_foreground
         self.mr_background = list(set(range(1, self.num_classes)) - set(mr_foreground)) if mr_foreground else None
         self.default_forward_branch = default_forward_branch
+
         self.data_loading_mode = "paired"
+        self.roi_size = roi_size
+        self.sw_batch_size = sw_batch_size
 
         self.grl = GradientReversalLayer(alpha=1)
         if not getattr(self, "feat_extractor", False):
@@ -103,12 +110,12 @@ class DANNModule(Mixin):
 
         # Losses
         self.ct_tal = (
-            TargetAdaptiveLoss(num_classes=self.num_classes, foreground=ct_foreground)
+            TargetAdaptativeLoss(num_classes=self.num_classes, foreground=ct_foreground)
             if self.ct_background is not None
             else DiceCELoss(to_onehot_y=True, softmax=True)
         )
         self.mr_tal = (
-            TargetAdaptiveLoss(num_classes=self.num_classes, foreground=mr_foreground)
+            TargetAdaptativeLoss(num_classes=self.num_classes, foreground=mr_foreground)
             if self.mr_background is not None
             else DiceCELoss(to_onehot_y=True, softmax=True)
         )
@@ -125,7 +132,7 @@ class DANNModule(Mixin):
             return dom_pred_logits
 
     def update(self, images, masks, modalities, alpha, **kwargs):
-        if getattr(self, "update", False):
+        if getattr(Mixin, "update", False):
             return super().update(images, masks, modalities, alpha, **kwargs)
         else:
             self.grl.set_alpha(alpha)
@@ -156,10 +163,10 @@ class DANNModule(Mixin):
             self.optimizer.step()
             return seg_loss.item(), adv_loss.item()
 
-    def inference(self, x, roi_size=(96, 96, 96), sw_batch_size=2):
+    def inference(self, x):
         # Using sliding windows
         self.eval()
-        return sliding_window_inference(x, roi_size, sw_batch_size, self.forward)
+        return sliding_window_inference(x, self.roi_size, self.sw_batch_size, self.forward)
 
     def save(self, checkpoint_dir):
         torch.save(self.feat_extractor.state_dict(), os.path.join(checkpoint_dir, "feat_extractor_state.pth"))
@@ -335,7 +342,19 @@ class DANNInitializer:
         )
 
     @staticmethod
-    def init_module(out_channels, loss, optim, lr, data_info, modality, partially_labelled, device, **kwargs):
+    def init_module(
+        out_channels,
+        loss,
+        optim,
+        lr,
+        roi_size,
+        sw_batch_size,
+        data_info,
+        modality,
+        partially_labelled,
+        device,
+        **kwargs,
+    ):
         if loss != "tal":
             ct_foreground = None
             mr_foreground = None
@@ -346,6 +365,8 @@ class DANNInitializer:
         module = DANNModule(
             out_channels=out_channels,
             num_classes=data_info["num_classes"],
+            roi_size=roi_size,
+            sw_batch_size=sw_batch_size,
             ct_foreground=ct_foreground,
             mr_foreground=mr_foreground,
             optimizer=optim,
