@@ -5,11 +5,14 @@
 # make changes to the pre-built modules in this repository.
 
 
+import random
+
 import torch
 import torch.nn.functional as F
 from einops import einsum
 from monai.losses import DiceCELoss
 from torch import nn
+from tqdm import tqdm
 
 from lib.loss.target_adaptative_loss import TargetAdaptativeLoss
 from networks.unet.unet3d import BasicUNetDecoder, BasicUNetEncoder
@@ -288,16 +291,170 @@ class CAMPseudoLabel(BaseMixin):
 class BasicUNet2dMixin(BaseMixin):
     def __init__(self):
         super().__init__()
-        self.data_loading_mode = "paired"
-        self.feat_extractor = BasicUNetEncoder(spatial_dims=2, in_channels=1, features=(64, 128, 256, 512, 1024, 128))
-        self.predictor = BasicUNetDecoder(spatial_dims=2, out_channels=4, features=(64, 128, 256, 512, 1024, 128))
+        self.data_loading_mode = "paired-shuffled"
+        self.feat_extractor = BasicUNetEncoder(spatial_dims=2, in_channels=1, features=(32, 32, 64, 128, 256, 32))
+        self.predictor = BasicUNetDecoder(spatial_dims=2, out_channels=4, features=(32, 32, 64, 128, 256, 32))
+        self.upsampler = nn.Upsample(scale_factor=16, mode="bilinear", align_corners=True)
         self.dom_classifier = nn.Sequential(
-            nn.Conv2d(1024, 256, kernel_size=3, padding=1),
+            nn.Conv2d(256 + self.num_classes, 32, kernel_size=3, padding=1),
             nn.MaxPool2d(kernel_size=2),
-            nn.ReLU(),
-            nn.Conv2d(256, 64, kernel_size=3, padding=1),
+            nn.LeakyReLU(0.01),
+            nn.Conv2d(32, 1, kernel_size=3, padding=1),
             nn.MaxPool2d(kernel_size=2),
-            nn.ReLU(),
-            nn.Flatten(),
-            nn.Linear(4096, 1),
+            nn.LeakyReLU(0.01),
+            # nn.Flatten(),
+            # nn.Linear(4096, 1),
+            nn.AdaptiveAvgPool2d(output_size=1),
         )
+        self.softmax = nn.Softmax(dim=1)
+
+    def update(self, images, masks, modalities, alpha, beta=0.75, gamma=0.2):
+        self.grl.set_alpha(alpha)
+        self.optimizer.zero_grad()
+
+        # Predictor branch
+        _features = {}
+        _outputs = {}
+        _seg_losses = {}
+        _dom_pred_logits = {}
+
+        for i in [0, 1]:
+            skip_outputs, _features[i] = self.feat_extractor(images[i])
+            _outputs[i] = self.predictor((skip_outputs, _features[i]))
+            if modalities[i][0] == "ct":
+                tal = self.ct_tal
+            elif modalities[i][0] == "mr":
+                tal = self.mr_tal
+            else:
+                raise ValueError(f"Invalid modality {modalities[i][0]}")
+            _seg_losses[i] = tal(_outputs[i], masks[i])
+            _seg_losses[i].backward(retain_graph=True)
+        seg_loss = _seg_losses[0] + _seg_losses[1]
+
+        # Domain Classifier branch: predict domain equivalent
+        for i in [0, 1]:
+            feature = self.upsampler(_features[i])
+            output = self.softmax(_outputs[i])
+            feature_output = torch.cat([feature, _outputs[i]], dim=1)
+            _dom_pred_logits[i] = self.dom_classifier(self.grl.apply(feature_output))
+        dom_pred_logits = torch.cat([_dom_pred_logits[0], _dom_pred_logits[1]])
+        if modalities[0][0] == "ct":
+            dom_true_label = torch.cat(
+                (
+                    torch.ones(_dom_pred_logits[0].shape, device="cuda"),
+                    torch.zeros(_dom_pred_logits[1].shape, device="cuda"),
+                )
+            )
+        else:
+            dom_true_label = torch.cat(
+                (
+                    torch.zeros(_dom_pred_logits[0].shape, device="cuda"),
+                    torch.ones(_dom_pred_logits[1].shape, device="cuda"),
+                )
+            )
+        adv_loss = self.adv_loss(dom_pred_logits, dom_true_label)
+        adv_loss.backward()
+        self.optimizer.step()
+        return seg_loss.item(), adv_loss.item()
+
+
+class CAMPseudoLabel2d(BaseMixin):
+    """
+    Desciption: Use from the last convolution layer as the psuedo label.
+
+    Performance: Unknown.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.data_loading_mode = "paired-shuffled"
+        self.feat_extractor = BasicUNetEncoder(spatial_dims=2, in_channels=1, features=(32, 32, 64, 128, 256, 32))
+        self.predictor = BasicUNetDecoder(spatial_dims=2, out_channels=4, features=(32, 32, 64, 128, 256, 32))
+        self.dom_classifier = nn.Sequential(
+            nn.Conv2d(256, 1, kernel_size=3, padding=1),
+            nn.MaxPool2d(kernel_size=2),
+            nn.SiLU(),
+            # nn.Conv2d(64, 1, kernel_size=3, padding=1),
+            # nn.MaxPool2d(kernel_size=2),
+            # nn.SiLU(),
+            nn.AdaptiveAvgPool2d(output_size=1),
+        )
+        self.dice2loss = DiceCELoss(to_onehot_y=True, softmax=True)
+
+    def update(self, images, masks, modalities, alpha, beta=0.75, gamma=0.2):
+        self.grl.set_alpha(alpha)
+        cam_threshold = gamma
+
+        masks = list(masks)
+        self.optimizer.zero_grad()
+
+        def get_cam_weight(feature):
+            jacobs = torch.empty((1, self.num_classes, *feature.shape[1:]))  # dim = (2, class, channel, h, w, d)
+            gap = torch.nn.AvgPool2d(kernel_size=512)
+            for patch in [0]:
+                jacobs[patch] = torch.squeeze(torch.autograd.functional.jacobian(gap, feature[[patch]]))
+            return torch.mean(jacobs, dim=(3, 4))
+
+        def get_cam(feature):
+            weight = get_cam_weight(feature).to("cuda")
+            cam = einsum(weight, feature, "n cls ch, n ch h w-> n cls h w")
+            return F.relu(cam)
+
+        # Predictor branch
+        _features = {}
+        _seg_losses = {}
+        _dom_pred_logits = {}
+
+        for i in [0, 1]:
+            skip_outputs, _features[i] = self.feat_extractor(images[i])
+            output = self.predictor((skip_outputs, _features[i]))
+            cam = get_cam(output)[:, 1:]
+            cam *= cam > cam_threshold
+            masks[i] += torch.argmax(cam, dim=1, keepdim=True) * (masks[i] == 0)
+            cam_pseudo_label = torch.argmax(cam, dim=1, keepdim=True)
+            cam_foreground = set(torch.unique(cam_pseudo_label).cpu().numpy()) - {0}
+
+            if modalities[i][0] == "ct":
+                foreground = list(set(self.ct_foreground) | cam_foreground)
+            elif modalities[i][0] == "mr":
+                foreground = list(set(self.mr_foreground) | cam_foreground)
+            else:
+                raise ValueError(f"Invalid modality {modalities[i][0]}")
+
+            tal = TargetAdaptativeLoss(self.num_classes, foreground)
+            _seg_losses[i] = tal(output, masks[i])
+            _seg_losses[i].backward(retain_graph=True)
+        seg_loss = _seg_losses[0] + _seg_losses[1]
+
+        # Domain Classifier branch: predict domain equivalent
+        for i in [0, 1]:
+            _dom_pred_logits[i] = self.dom_classifier(self.grl.apply(_features[i]))
+        dom_pred_logits = torch.cat([_dom_pred_logits[0], _dom_pred_logits[1]])
+
+        if modalities[0][0] == "ct":
+            dom_true_label = torch.cat(
+                (
+                    torch.ones(_dom_pred_logits[0].shape, device="cuda"),
+                    torch.zeros(_dom_pred_logits[1].shape, device="cuda"),
+                )
+            )
+        else:
+            dom_true_label = torch.cat(
+                (
+                    torch.zeros(_dom_pred_logits[0].shape, device="cuda"),
+                    torch.ones(_dom_pred_logits[1].shape, device="cuda"),
+                )
+            )
+
+        adv_loss = self.adv_loss(dom_pred_logits, dom_true_label)
+
+        adv_loss.backward()
+        # if adv_loss < 0.5:
+        #     adv_loss.backward()
+        # else:
+        #     _seg_losses[0].backward(retain_graph=True)
+        #     _seg_losses[1].backward(retain_graph=True)
+        #     adv_loss.backward()
+
+        self.optimizer.step()
+        return seg_loss.item(), adv_loss.item()
