@@ -31,6 +31,8 @@ class SegmentationModule(nn.Module):
     def __init__(
         self,
         out_channels: int,
+        roi_size: tuple,
+        sw_batch_size: int,
         feat_extractor: Optional[nn.Module] = None,
         predictor: Optional[nn.Module] = None,
         net: Optional[nn.Module] = None,
@@ -41,6 +43,18 @@ class SegmentationModule(nn.Module):
     ):
         super().__init__()
 
+        # A quick way to set up this module is to assign components here:
+        net = BasicUNet(
+            in_channels=1,
+            out_channels=out_channels,
+            features=(32, 32, 64, 128, 256, 32),
+            spatial_dims=2,
+        )
+        # feat_extractor = None
+        # predictor = None
+
+        self.roi_size = roi_size
+        self.sw_batch_size = sw_batch_size
         self.net = net
         self.feat_extractor = feat_extractor
         self.predictor = predictor
@@ -54,12 +68,9 @@ class SegmentationModule(nn.Module):
         elif (feat_extractor is not None) and (predictor is not None):
             params = list(self.feat_extractor.parameters()) + list(self.predictor.parameters())
         else:
+            # default network architecture
             self.net = BasicUNet(in_channels=1, out_channels=out_channels, spatial_dims=3)
             params = self.net.parameters()
-            # Default feature extractor and predictor
-            # self.feat_extractor = UXNETEncoder(in_chans=1)
-            # self.predictor = UXNETDecoder(out_chans=out_channels)
-            # params = list(self.feat_extractor.parameters()) + list(self.predictor.parameters())
 
         differentiable_params = [p for p in params if p.requires_grad]
         self.criterion = criterion
@@ -84,21 +95,19 @@ class SegmentationModule(nn.Module):
         self.optimizer.zero_grad()
         with torch.autocast(device_type="cuda") if self.amp else nullcontext():
             output = self.forward(x)
-            if modality == 0:
-                loss = self.criterion[0](output, y)
-            elif modality == 1:
-                loss = self.criterion[1](output, y)
+            if isinstance(self.criterion, (tuple, list)):
+                loss = self.criterion[modality](output, y)
             else:
                 loss = self.criterion(output, y)
         loss.backward()
         self.optimizer.step()
         return loss.item()
 
-    def inference(self, x, roi_size=(96, 96, 96)):
+    def inference(self, x):
         # Using sliding windows
         self.eval()
         sw_batch_size = crop_sample  # this is used corresponding to amos transforms
-        return sliding_window_inference(x, roi_size, sw_batch_size, self.forward)
+        return sliding_window_inference(x, self.roi_size, self.sw_batch_size, self.forward)
 
     def save(self, checkpoint_dir):
         Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
@@ -270,7 +279,19 @@ class SegmentationInitializer:
         return train_dataloader, val_dataloader, test_dataloader
 
     @staticmethod
-    def init_module(out_channels, loss, optim, lr, data_info, modality, partially_labelled, device, **kwargs):
+    def init_module(
+        out_channels,
+        loss,
+        optim,
+        lr,
+        roi_size,
+        sw_batch_size,
+        data_info,
+        modality,
+        partially_labelled,
+        device,
+        **kwargs,
+    ):
         if loss != "tal":
             criterion = DiceCELoss(include_background=True, to_onehot_y=True, softmax=True)
         elif modality in ["ct", "mr"]:
@@ -281,6 +302,8 @@ class SegmentationInitializer:
             criterion = (ct_criterion, mr_criterion)
         module = SegmentationModule(
             out_channels=out_channels,
+            roi_size=roi_size,
+            sw_batch_size=sw_batch_size,
             optimizer=optim,
             lr=lr,
             criterion=criterion,
