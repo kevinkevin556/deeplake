@@ -21,7 +21,6 @@ from torch.utils.data import ConcatDataset
 
 from modules.co_training import CoTrainingInitializer
 from modules.dann import DANNInitializer
-from modules.dann2 import DANN2Initializer
 from modules.segmentation import SegmentationInitializer
 
 device = torch.device("cuda")
@@ -79,14 +78,14 @@ datasets = {
         "train_transforms": None,
         "val_transforms": None,
         "num_classes": SMATDataset.num_classes,
-        # CT provides SAT, MR provides TSM and VAT
+        # 1:SAT, 2:TSM, 3:VAT
         "fg": {
-            "ct": [i for i in [3]],
-            "mr": [i for i in [1, 2]],
+            "ct": [i for i in [1, 2, 3]],
+            "mr": [i for i in [1, 2, 3]],
         },
         "bg": {
-            "ct": {i: 0 for i in [1, 2]},
-            "mr": {i: 0 for i in [3]},
+            "ct": {i: 0 for i in []},
+            "mr": {i: 0 for i in []},
         },
     },
 }
