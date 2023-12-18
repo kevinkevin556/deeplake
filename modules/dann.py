@@ -1,5 +1,6 @@
 import itertools
 import os
+import random
 from pathlib import Path
 from typing import Optional
 
@@ -21,6 +22,7 @@ from modules.mixins.dann_mixins import (
     BaseMixin,
     BasicUNet2dMixin,
     CAMPseudoLabel,
+    CAMPseudoLabel2d,
     ConterfactucalAlignmentMixin,
     PredictDomainEquivalenceMixin,
     RandomPairInputMixin,
@@ -30,19 +32,22 @@ from networks.uxnet3d.network_backbone import UXNETDecoder, UXNETEncoder
 
 
 class GradientReversalLayer(torch.autograd.Function):
-    def __init__(ctx, alpha):
-        ctx.set_alpha(alpha)
+    alpha = 1
 
-    def set_alpha(ctx, alpha):
-        ctx.alpha = alpha
+    def __init__(self, alpha):
+        self.set_alpha(alpha)
+
+    def set_alpha(self, alpha):
+        GradientReversalLayer.alpha = alpha
 
     @staticmethod
     def forward(ctx, input):
+        ctx.alpha = GradientReversalLayer.alpha
         return input
 
     @staticmethod
     def backward(ctx, grad_output):
-        return -grad_output
+        return -ctx.alpha * grad_output
 
 
 # Mixin = nn.Module  # 3d
@@ -62,8 +67,6 @@ class DANNModule(Mixin):
         lr: float = 0.0001,
         default_forward_branch: int = 0,
     ):
-        super().__init__()
-
         # Network components
         h, w, d = 96, 96, 96  # feature size
         self.num_classes = num_classes  # number of AMOS classes
@@ -73,11 +76,13 @@ class DANNModule(Mixin):
         self.mr_background = list(set(range(1, self.num_classes)) - set(mr_foreground)) if mr_foreground else None
         self.default_forward_branch = default_forward_branch
 
-        self.data_loading_mode = "paired"
         self.roi_size = roi_size
         self.sw_batch_size = sw_batch_size
-
         self.grl = GradientReversalLayer(alpha=1)
+
+        super().__init__()
+        if not getattr(self, "data_loading_mode", False):
+            self.data_loading_mode = "paired"
         if not getattr(self, "feat_extractor", False):
             self.feat_extractor = BasicUNetEncoder(in_channels=1)
         if not getattr(self, "predictor", False):
@@ -277,16 +282,23 @@ class DANNTrainer:
         self.show_training_info(module, train_dataloader, val_dataloader)
         ct_train_dtl, mr_train_dtl = train_dataloader
         best_metric = 0
-        train_pbar = tqdm(range(self.max_iter), dynamic_ncols=True)
         writer = SummaryWriter(log_dir=self.checkpoint_dir)
         writer.add_scalar(f"train/{self.metric.__class__.__name__}", 0, 0)  # validation metric starts from zero
 
         data_loading_mode = getattr(module, "data_loading_mode", "paired")  # "paired" or "random"
+        print("Data loading mode:", data_loading_mode)
+
+        train_pbar = tqdm(range(self.max_iter), dynamic_ncols=True)
         for step in train_pbar:
             module.train()
             if data_loading_mode == "paired":
                 batch1 = next(iter(ct_train_dtl))
                 batch2 = next(iter(mr_train_dtl))
+            if data_loading_mode == "paired-shuffled":
+                batch1 = next(iter(ct_train_dtl))
+                batch2 = next(iter(mr_train_dtl))
+                if random.random() > 0.5:
+                    batch1, batch2 = batch2, batch1
             if data_loading_mode == "random":
                 batch1 = next(iter(ct_train_dtl)) if np.random.random(1) < 0.5 else next(iter(mr_train_dtl))
                 batch2 = next(iter(ct_train_dtl)) if np.random.random(1) < 0.5 else next(iter(mr_train_dtl))
@@ -301,9 +313,14 @@ class DANNTrainer:
             seg_loss, adv_loss = module.update(images, masks, modalities, alpha=grl_lambda)
             writer.add_scalar(f"train/seg_loss", seg_loss, step)
             writer.add_scalar(f"train/adv_loss", adv_loss, step)
-            train_pbar.set_description(
-                f"Training ({step} / {self.max_iter} Steps) ({modalities[0][0]},{modalities[1][0]}) (seg_loss={seg_loss:2.5f}, adv_loss={adv_loss:2.5f})"
-            )
+            if grl_lambda is not None:
+                train_pbar.set_description(
+                    f"Training ({step} / {self.max_iter} Steps) ({modalities[0][0]},{modalities[1][0]}) (grl_lambda={grl_lambda:2.3f})(seg_loss={seg_loss:2.5f}, adv_loss={adv_loss:2.5f})"
+                )
+            else:
+                train_pbar.set_description(
+                    f"Training ({step} / {self.max_iter} Steps) ({modalities[0][0]},{modalities[1][0]}) (seg_loss={seg_loss:2.5f}, adv_loss={adv_loss:2.5f})"
+                )
             if ((step + 1) % self.eval_step == 0) or (step == self.max_iter - 1):
                 val_metrics = self.validation(module, val_dataloader, global_step=step)
                 mean_metric, ct_metric, mr_metric = val_metrics
