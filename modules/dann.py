@@ -1,9 +1,11 @@
+# Import necessary libraries and modules
 import itertools
 import os
 import random
 from pathlib import Path
 from typing import Optional
 
+# Import numerical and deep learning libraries
 import numpy as np
 import torch
 from monai.data import DataLoader, decollate_batch
@@ -16,6 +18,7 @@ from torch.optim import SGD, Adam, AdamW
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
+# Import custom modules and networks for medical image processing
 from lib.loss.target_adaptative_loss import TargetAdaptativeLoss
 from lib.utils.validation import get_output_and_mask
 from modules.mixins.dann_mixins import (
@@ -31,30 +34,37 @@ from networks.unet.unet3d import BasicUNetDecoder, BasicUNetEncoder
 from networks.uxnet3d.network_backbone import UXNETDecoder, UXNETEncoder
 
 
+# Define a gradient reversal layer for domain adaptation in neural networks
 class GradientReversalLayer(torch.autograd.Function):
     alpha = 1
 
+    # Initialize with a scaling factor alpha
     def __init__(self, alpha):
         self.set_alpha(alpha)
 
+    # Set the scaling factor alpha
     def set_alpha(self, alpha):
         GradientReversalLayer.alpha = alpha
 
     @staticmethod
     def forward(ctx, input):
+        # Forward pass just returns the input
         ctx.alpha = GradientReversalLayer.alpha
         return input
 
     @staticmethod
     def backward(ctx, grad_output):
+        # Backward pass reverses the gradient scaled by alpha
         return -ctx.alpha * grad_output
 
 
-# Mixin = nn.Module  # 3d
-Mixin = BasicUNet2dMixin  # 2d
+# Define a mixin for use in the domain adversarial neural network (DANN)
+Mixin = BasicUNet2dMixin  # Using 2D UNet architecture for feature extraction
 
 
+# Define the DANN module for medical image segmentation
 class DANNModule(Mixin):
+    # Initialization of the DANN module
     def __init__(
         self,
         out_channels: int,
@@ -67,19 +77,25 @@ class DANNModule(Mixin):
         lr: float = 0.0001,
         default_forward_branch: int = 0,
     ):
-        # Network components
-        h, w, d = 96, 96, 96  # feature size
-        self.num_classes = num_classes  # number of AMOS classes
+        # Define network parameters and components
+        h, w, d = 96, 96, 96  # Dimensions for feature maps
+        self.num_classes = num_classes  # Number of segmentation classes
+
+        # Define foreground and background classes for CT and MR images
         self.ct_foreground = ct_foreground
         self.ct_background = list(set(range(1, self.num_classes)) - set(ct_foreground)) if ct_foreground else None
         self.mr_foreground = mr_foreground
         self.mr_background = list(set(range(1, self.num_classes)) - set(mr_foreground)) if mr_foreground else None
         self.default_forward_branch = default_forward_branch
 
+        # Initialize region of interest size and batch size for sliding window inference
         self.roi_size = roi_size
         self.sw_batch_size = sw_batch_size
+
+        # Initialize the gradient reversal layer
         self.grl = GradientReversalLayer(alpha=1)
 
+        # Initialize network components: feature extractor, predictor, and domain classifier
         super().__init__()
         if not getattr(self, "data_loading_mode", False):
             self.data_loading_mode = "paired"
@@ -99,7 +115,7 @@ class DANNModule(Mixin):
                 nn.Linear(64, 1),
             )
 
-        # Optimizer
+        # Set up the optimizer for training
         params = (
             list(self.feat_extractor.parameters())
             + list(self.predictor.parameters())
@@ -108,12 +124,14 @@ class DANNModule(Mixin):
         self.lr = lr
         if optimizer == "AdamW":
             self.optimizer = AdamW(params, lr=self.lr)
-        if optimizer == "Adam":
+        elif optimizer == "Adam":
             self.optimizer = Adam(params, lr=self.lr)
-        if optimizer == "SGD":
+        elif optimizer == "SGD":
             self.optimizer = SGD(params, lr=self.lr)
+        else:
+            raise ValueError("The specified optimizer is not current supported.")
 
-        # Losses
+        # Define losses for segmentation and adversarial training
         self.ct_tal = (
             TargetAdaptativeLoss(num_classes=self.num_classes, foreground=ct_foreground)
             if self.ct_background is not None
@@ -126,58 +144,72 @@ class DANNModule(Mixin):
         )
         self.adv_loss = BCEWithLogitsLoss()
 
+    # Define the forward pass for the module
     def forward(self, x):
+        # Extract features and apply the predictor or domain classifier based on the branch
         skip_outputs, feature = self.feat_extractor(x)
         branch = self.default_forward_branch
         if branch == 0:
             output = self.predictor((skip_outputs, feature))
             return output
-        if branch == 1:
+        elif branch == 1:
             dom_pred_logits = self.dom_classifier(self.grl.apply(feature))
             return dom_pred_logits
+        else:
+            raise ValueError(f"Invalid branch number: {branch}. Expect 0 or 1.")
 
+    # Update function for training
     def update(self, images, masks, modalities, alpha, **kwargs):
+        # Custom update function for training with gradient reversal layer
         if getattr(Mixin, "update", False):
             return super().update(images, masks, modalities, alpha, **kwargs)
         else:
+            # Set alpha value for the gradient reversal layer and reset gradients
             self.grl.set_alpha(alpha)
             self.optimizer.zero_grad()
+
+            # Extract features and make predictions for CT and MR images
             ct_image, ct_mask = images[0], masks[0]
             mr_image, mr_mask = images[1], masks[1]
-
-            # Predictor branch
             ct_skip_outputs, ct_feature = self.feat_extractor(ct_image)
             ct_output = self.predictor((ct_skip_outputs, ct_feature))
             mr_skip_outputs, mr_feature = self.feat_extractor(mr_image)
             mr_output = self.predictor((mr_skip_outputs, mr_feature))
 
+            # Compute segmentation losses for CT and MR images
             ct_seg_loss = self.ct_tal(ct_output, ct_mask)
             mr_seg_loss = self.mr_tal(mr_output, mr_mask)
+            # Total segmentation loss is the sum of individual losses
             seg_loss = ct_seg_loss + mr_seg_loss
             seg_loss.backward(retain_graph=True)
 
-            # Domain Classifier branch: predict domain label
+            # Compute adversarial loss for domain classification
             ct_dom_pred_logits = self.dom_classifier(self.grl.apply(ct_feature))
             mr_dom_pred_logits = self.dom_classifier(self.grl.apply(mr_feature))
+            # Combine domain predictions and true labels
             ct_shape, mr_shape = ct_dom_pred_logits.shape, mr_dom_pred_logits.shape
             dom_pred_logits = torch.cat([ct_dom_pred_logits, mr_dom_pred_logits])
             dom_true_label = torch.cat((ones(ct_shape, device="cuda"), zeros(mr_shape, device="cuda")))
+            # Calculate adversarial loss and perform backward pass
             adv_loss = self.adv_loss(dom_pred_logits, dom_true_label)
             adv_loss.backward()
 
+            # Update the model parameters
             self.optimizer.step()
             return seg_loss.item(), adv_loss.item()
 
+    # Inference using the sliding window approach
     def inference(self, x):
-        # Using sliding windows
         self.eval()
         return sliding_window_inference(x, self.roi_size, self.sw_batch_size, self.forward)
 
+    # Save the state of the model components
     def save(self, checkpoint_dir):
         torch.save(self.feat_extractor.state_dict(), os.path.join(checkpoint_dir, "feat_extractor_state.pth"))
         torch.save(self.predictor.state_dict(), os.path.join(checkpoint_dir, "predictor_state.pth"))
         torch.save(self.dom_classifier.state_dict(), os.path.join(checkpoint_dir, "dom_classifier_state.pth"))
 
+    # Load the state of the model components
     def load(self, checkpoint_dir):
         try:
             self.feat_extractor.load_state_dict(torch.load(os.path.join(checkpoint_dir, "feat_extractor_state.pth")))
@@ -186,6 +218,7 @@ class DANNModule(Mixin):
         except Exception as e:
             raise e
 
+    # Display information about the encoder, decoder, optimizer, and losses
     def print_info(self):
         print("Module Encoder:", self.feat_extractor.__class__.__name__)
         print("       Decoder:", self.predictor.__class__.__name__)
@@ -194,8 +227,9 @@ class DANNModule(Mixin):
         print("Discriminator Loss:", self.adv_loss)
 
 
+# Trainer class for DANN model
 class DANNTrainer:
-    def __init__(
+    def init(
         self,
         num_classes: int,
         max_iter: int = 10000,
@@ -206,21 +240,25 @@ class DANNTrainer:
         data_info: dict = None,
         partially_labelled: bool = False,
     ):
+        # Set up trainer properties
         self.num_classes = num_classes
         self.max_iter = max_iter
         self.metric = metric
         self.eval_step = eval_step
         self.checkpoint_dir = checkpoint_dir
+
+        # Ensure checkpoint directory exists
         Path(self.checkpoint_dir).mkdir(parents=True, exist_ok=True)
         self.device = device
         self.data_info = data_info
         self.partially_labelled = partially_labelled
 
+    # Function to display training information
     def show_training_info(self, module, train_dataloader, val_dataloader):
         ct_train_dtl, mr_train_dtl = train_dataloader
         ct_val_dtl, mr_val_dtl = val_dataloader
         print("--------")
-        print("Device:", self.device)  # device is a global variable (not an argument of cli)
+        print("Device:", self.device)  # Display the computing device
         print("# of Training Samples:", {"ct": len(ct_train_dtl), "mr": len(mr_train_dtl)})
         print("# of Validation Samples:", {"ct": len(ct_val_dtl), "mr": len(mr_val_dtl)})
         print("Max iteration:", self.max_iter, f"steps (validates per {self.eval_step} steps)")
@@ -229,7 +267,9 @@ class DANNTrainer:
         module.print_info()
         print("--------")
 
+    # Validation process for the trained model
     def validation(self, module, dataloader, global_step=None):
+        # Set the model to evaluation mode and perform validation
         module.eval()
         data_iter = itertools.chain(*dataloader)
         ct_val_metrics = []
@@ -237,18 +277,17 @@ class DANNTrainer:
         num_classes = module.num_classes
         background = {"ct": module.ct_background, "mr": module.mr_background}
 
+        # Initialize progress bar for validation
         val_pbar = tqdm(data_iter, total=len(dataloader[0]) + len(dataloader[1]), dynamic_ncols=True)
         metric_name = self.metric.__class__.__name__
         train_val_desc = (
-            "Validate ({} Steps) (Partially-labelled:{}) ({}={:2.5f})"  # progress bar description used during training
+            "Validate ({} Steps) (Partially-labelled:{}) ({}={:2.5f})"  # Description for progress bar during training
         )
-        simple_val_desc = (
-            "Validate (Partially-labelled:{}) ({}={:2.5f})"  # progress bar description used when the network is tested
-        )
+        simple_val_desc = "Validate (Partially-labelled:{}) ({}={:2.5f})"  # Description for progress bar during testing
         val_on_partial = self.partially_labelled and (global_step is not None)
         with torch.no_grad():
             for batch in val_pbar:
-                # Infer, decollate data into list of samples, and proprocess both predictions and labels
+                # Process each batch and compute metrics
                 images, masks = batch["image"].to(self.device), batch["label"].to(self.device)
                 modality_label = batch["modality"][0]
                 samples = decollate_batch({"prediction": module.inference(images), "ground_truth": masks})
@@ -256,7 +295,8 @@ class DANNTrainer:
                     outputs, masks = get_output_and_mask(samples, num_classes, background[modality_label])
                 else:
                     outputs, masks = get_output_and_mask(samples, num_classes)
-                # Compute validation metrics
+
+                # Compute and aggregate validation metrics
                 self.metric(y_pred=outputs, y=masks)
                 batch_metric = self.metric.aggregate().item()
                 if modality_label == "ct":
@@ -266,7 +306,8 @@ class DANNTrainer:
                 else:
                     raise ValueError("Invalid modality.")
                 self.metric.reset()
-                # Update progressbar
+
+                # Update progress bar description
                 if global_step is not None:
                     val_pbar.set_description(
                         train_val_desc.format(global_step, val_on_partial, metric_name, batch_metric)
@@ -278,19 +319,24 @@ class DANNTrainer:
         mr_val_metric = np.mean(mr_val_metrics)
         return mean_val_metric, ct_val_metric, mr_val_metric
 
+    # Training process for the DANN model
     def train(self, module, train_dataloader, val_dataloader):
+        # Display training information and initialize metrics
         self.show_training_info(module, train_dataloader, val_dataloader)
         ct_train_dtl, mr_train_dtl = train_dataloader
         best_metric = 0
         writer = SummaryWriter(log_dir=self.checkpoint_dir)
-        writer.add_scalar(f"train/{self.metric.__class__.__name__}", 0, 0)  # validation metric starts from zero
+        writer.add_scalar(f"train/{self.metric.__class__.__name__}", 0, 0)  # Initialize validation metric at zero
 
-        data_loading_mode = getattr(module, "data_loading_mode", "paired")  # "paired" or "random"
+        data_loading_mode = getattr(module, "data_loading_mode", "paired")  # Define data loading mode
         print("Data loading mode:", data_loading_mode)
 
+        # Main training loop
         train_pbar = tqdm(range(self.max_iter), dynamic_ncols=True)
         for step in train_pbar:
             module.train()
+
+            # Load batches based on data loading mode (paired, paired-shuffled, random)
             if data_loading_mode == "paired":
                 batch1 = next(iter(ct_train_dtl))
                 batch2 = next(iter(mr_train_dtl))
@@ -305,14 +351,17 @@ class DANNTrainer:
             images = batch1["image"].to(self.device), batch2["image"].to(self.device)
             masks = batch1["label"].to(self.device), batch2["label"].to(self.device)
             modalities = batch1["modality"], batch2["modality"]
-            ## We gradually increase the value of lambda of grl as the training proceeds.
-            #    p = float(batch_idx + epoch_idx * len_dataloader) / (n_epoch * len_dataloader)
-            #    grl_lambda = 2. / (1. + np.exp(-10 * p)) - 1
+
+            # Adjust gradient reversal layer lambda based on training progress
             p = float(step) / self.max_iter
             grl_lambda = 2.0 / (1.0 + np.exp(-10 * p)) - 1
             seg_loss, adv_loss = module.update(images, masks, modalities, alpha=grl_lambda)
+
+            # Record losses to the tensorboard writer
             writer.add_scalar(f"train/seg_loss", seg_loss, step)
             writer.add_scalar(f"train/adv_loss", adv_loss, step)
+
+            # Update training progress description
             if grl_lambda is not None:
                 train_pbar.set_description(
                     f"Training ({step} / {self.max_iter} Steps) ({modalities[0][0]},{modalities[1][0]}) (grl_lambda={grl_lambda:2.3f})(seg_loss={seg_loss:2.5f}, adv_loss={adv_loss:2.5f})"
@@ -321,6 +370,8 @@ class DANNTrainer:
                 train_pbar.set_description(
                     f"Training ({step} / {self.max_iter} Steps) ({modalities[0][0]},{modalities[1][0]}) (seg_loss={seg_loss:2.5f}, adv_loss={adv_loss:2.5f})"
                 )
+
+            # Perform validation at specified intervals and save model if performance improves
             if ((step + 1) % self.eval_step == 0) or (step == self.max_iter - 1):
                 val_metrics = self.validation(module, val_dataloader, global_step=step)
                 mean_metric, ct_metric, mr_metric = val_metrics
