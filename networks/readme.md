@@ -1,1 +1,1 @@
-The source code in this directory is form 3D-UXNet.
+The source code in this directory is from 3D-UXNet.
