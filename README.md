@@ -24,3 +24,14 @@ python main.py
 --num_workers 2 
 --beta
 ```
+
+## Source code hierarchy
+```mermaid
+graph TD;
+    Module1["Module"]-->Trainer;
+    Dataloader1["DataLoader"]-->Trainer;
+    Updater-->Trainer;
+    Module2["Module"]-->Validator;
+    Dataloader2["DataLoader"]-->Validator;
+    Validator-..->Trainer;
+```
