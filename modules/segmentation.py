@@ -22,7 +22,7 @@ from lib.loss.target_adaptative_loss import TargetAdaptativeLoss
 from lib.utils.validation import get_output_and_mask
 from networks.uxnet3d.network_backbone import UXNETDecoder, UXNETEncoder
 
-crop_sample = 2
+from .base_trainer import BaseTrainer
 
 torch.backends.cudnn.benchmark = True
 
@@ -106,7 +106,6 @@ class SegmentationModule(nn.Module):
     def inference(self, x):
         # Using sliding windows
         self.eval()
-        sw_batch_size = crop_sample  # this is used corresponding to amos transforms
         return sliding_window_inference(x, self.roi_size, self.sw_batch_size, self.forward)
 
     def save(self, checkpoint_dir):
@@ -134,11 +133,11 @@ class SegmentationModule(nn.Module):
         print("Loss function:", repr(self.criterion))
 
 
-class SegmentationTrainer:
+class SegmentationTrainer(BaseTrainer):
     def __init__(
         self,
         num_classes: int,
-        max_iter: int = 40000,
+        max_iter: int = 10000,
         metric: Metric = DiceMetric(include_background=True, reduction="mean", get_not_nans=False),
         eval_step: int = 500,
         checkpoint_dir: str = "./checkpoints/",
@@ -146,113 +145,16 @@ class SegmentationTrainer:
         data_info: dict = None,
         partially_labelled: bool = False,
     ):
-        self.max_iter = max_iter
-        self.num_classes = num_classes
-        self.metric = metric
-        self.eval_step = eval_step
-        self.checkpoint_dir = checkpoint_dir
-        self.device = device
-        self.data_info = data_info
-        self.partially_labelled = partially_labelled
-
-    # auxilary function to show training info before training procedure starts
-    def show_training_info(self, module, train_dataloader, val_dataloader):
-        print("--------")
-        print("Device:", self.device)  # device is a global variable (not an argument of cli)
-        print("# of Training Samples:", len(train_dataloader))
-        print("# of Validation Samples:", len(val_dataloader))
-        print("Max iteration:", self.max_iter, f"steps (validates per {self.eval_step} steps)")
-        print("Checkpoint directory:", self.checkpoint_dir)
-        print("Evaluation metric:", self.metric.__class__.__name__)
-        module.print_info()
-        print("--------")
-
-    def validation(self, module, dataloader, global_step=None, **kwargs):
-        module.eval()
-        ct_val_metrics = []
-        mr_val_metrics = []
-        val_pbar = tqdm(dataloader, dynamic_ncols=True)
-        metric_name = self.metric.__class__.__name__
-        train_val_desc = (
-            "Validate ({} Steps) (Partially-labelled:{}) ({}={:2.5f})"  # progress bar description used during training
+        super().__init__(
+            num_classes=num_classes,
+            max_iter=max_iter,
+            metric=metric,
+            eval_step=eval_step,
+            checkpoint_dir=checkpoint_dir,
+            device=device,
+            data_info=data_info,
+            partially_labelled=partially_labelled,
         )
-        simple_val_desc = (
-            "Validate (Partially-labelled:{}) ({}={:2.5f})"  # progress bar description used when the network is tested
-        )
-        val_on_partial = self.partially_labelled and (global_step is not None)
-        with torch.no_grad():
-            for batch in val_pbar:
-                # Infer, decollate data into list of samples, and proprocess both predictions and labels
-                images, masks = batch["image"].to(self.device), batch["label"].to(self.device)
-                modality_label = batch["modality"][0]
-                infer_out = module.inference(images)
-                samples = decollate_batch({"prediction": infer_out, "ground_truth": masks})
-                if self.partially_labelled and (global_step is not None):
-                    background_class = list(self.data_info["bg"][modality_label].keys())
-                else:
-                    background_class = None
-                outputs, masks = get_output_and_mask(samples, self.num_classes, background_class)
-                # Compute validation metrics
-                self.metric(y_pred=outputs, y=masks)
-                batch_metric = self.metric.aggregate().item()
-                if modality_label == "ct":
-                    ct_val_metrics.append(batch_metric)
-                elif modality_label == "mr":
-                    mr_val_metrics.append(batch_metric)
-                else:
-                    raise ValueError("Invalid modality.")
-                self.metric.reset()
-                # Update progressbar
-                if global_step is not None:
-                    val_pbar.set_description(
-                        train_val_desc.format(global_step, val_on_partial, metric_name, batch_metric)
-                    )
-                else:
-                    val_pbar.set_description(simple_val_desc.format(val_on_partial, metric_name, batch_metric))
-        mean_val_metric = np.mean(ct_val_metrics + mr_val_metrics)
-        ct_val_metric = np.mean(ct_val_metrics)
-        mr_val_metric = np.mean(mr_val_metrics)
-        return mean_val_metric, ct_val_metric, mr_val_metric
-
-    def train(self, module, train_dataloader, val_dataloader):
-        self.show_training_info(module, train_dataloader, val_dataloader)
-        best_metric = 0
-        train_pbar = tqdm(range(self.max_iter), dynamic_ncols=True)
-        writer = SummaryWriter(log_dir=self.checkpoint_dir)
-        writer.add_scalar(f"train/{self.metric.__class__.__name__}", 0, 0)  # validation metric starts from zero
-        for step in train_pbar:
-            module.train()
-            # Backpropagation
-            batch = next(iter(train_dataloader))
-            images = batch["image"].to(self.device)
-            masks = batch["label"].to(self.device)
-            modality_label = batch["modality"][0]
-            if self.partially_labelled:
-                modality = 0 if modality_label == "ct" else 1
-            else:
-                modality = None
-            loss = module.update(images, masks, modality)
-            train_pbar.set_description(
-                f"Training ({step+1} / {self.max_iter} Steps) ({modality_label}) (loss={loss:2.5f})"
-            )
-            writer.add_scalar(f"train/{module.criterion.__class__.__name__}", loss, step)
-            # Validation
-            if ((step + 1) % self.eval_step == 0) or (step == self.max_iter - 1):
-                val_metrics = self.validation(module, val_dataloader, global_step=step)
-                mean_metric, ct_metric, mr_metric = val_metrics
-                writer.add_scalar(f"val/{self.metric.__class__.__name__}", mean_metric, step)
-                writer.add_scalar(f"val/ct", ct_metric, step)
-                writer.add_scalar(f"val/mr", mr_metric, step)
-
-                val_metric = min(ct_metric, mr_metric)
-                if val_metric > best_metric:
-                    module.save(self.checkpoint_dir)
-                    msg = f"\033[32mModel saved! Validation: (New) {val_metric:2.7f} > (Old) {best_metric:2.7f}\033[0m"
-                    best_metric = val_metric
-                else:
-                    msg = f"\033[31mNo improvement. Validation: (New) {val_metric:2.7f} <= (Old) {best_metric:2.7f}\033[0m"
-                msg += f" (CT) {ct_metric:2.7f} (MR) {mr_metric:2.7f}"
-                tqdm.write(msg)
 
 
 def concat(dataset):

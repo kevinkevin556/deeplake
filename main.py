@@ -80,12 +80,12 @@ datasets = {
         "num_classes": SMATDataset.num_classes,
         # 1:SAT, 2:TSM, 3:VAT
         "fg": {
-            "ct": [i for i in [1, 2, 3]],
-            "mr": [i for i in [1, 2, 3]],
+            "ct": [i for i in [1]],
+            "mr": [i for i in [2, 3]],
         },
         "bg": {
-            "ct": {i: 0 for i in []},
-            "mr": {i: 0 for i in []},
+            "ct": {i: 0 for i in [2, 3]},
+            "mr": {i: 0 for i in [1]},
         },
     },
 }
@@ -128,7 +128,10 @@ def get_args():
         help="Choose the type of data modality, such as CT scans, MRIs, or a combination.",
     )
     parser.add_argument(
-        "--partially_labelled", type=bool, help="If enabled, the training will include partially labeled data."
+        "--partially_labelled",
+        type=str,
+        choices=["True", "False"],
+        help="If enabled, the training will include partially labeled data.",
     )
     parser.add_argument(
         "--holdout_ratio",
@@ -226,8 +229,8 @@ def get_datasets(
     background = data_info["bg"]
     foreground = data_info["fg"]
 
+    print(f"** Partially Labelled = {partially_labelled}")
     if partially_labelled:
-        print("** Partially Labelled = True")
         if modality in ["ct", "mr"]:
             print("** Foreground =", foreground[modality])
             mapping = {modality: background[modality]}
@@ -315,7 +318,12 @@ def main():
     output = config["path"]["output"]
     debug = config["path"]["debug"]
     modality = args.modality  # {"ct", "mr", "ct+mr"}
-    partially_labelled = args.partially_labelled  # {True, False}
+    if args.partially_labelled == "True":  # {True, False}
+        partially_labelled = True
+    elif args.partially_labelled == "False":
+        partially_labelled = False
+    else:
+        raise ValueError("Invalid partially_labelled value.")
     holdout_ratio = args.holdout_ratio
     mode = args.mode  # {"train", "test"}
 

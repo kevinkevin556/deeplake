@@ -458,3 +458,172 @@ class CAMPseudoLabel2d(BaseMixin):
 
         self.optimizer.step()
         return seg_loss.item(), adv_loss.item()
+
+
+class CycleganDANN2d(BaseMixin):
+    def __init__(self):
+        super().__init__()
+        self.data_loading_mode = "paired-shuffled"
+        self.feat_extractor = BasicUNetEncoder(spatial_dims=2, in_channels=1, features=(32, 32, 64, 128, 256, 32))
+        self.predictor = BasicUNetDecoder(spatial_dims=2, out_channels=4, features=(32, 32, 64, 128, 256, 32))
+        self.upsampler = nn.Upsample(scale_factor=16, mode="bilinear", align_corners=True)
+        self.dom_classifier = nn.Sequential(
+            nn.Conv2d(256, 32, kernel_size=3, padding=1),
+            nn.MaxPool2d(kernel_size=2),
+            nn.LeakyReLU(0.01),
+            nn.Conv2d(32, 1, kernel_size=3, padding=1),
+            nn.MaxPool2d(kernel_size=2),
+            nn.LeakyReLU(0.01),
+            # nn.Flatten(),
+            # nn.Linear(4096, 1),
+            nn.AdaptiveAvgPool2d(output_size=1),
+        )
+        self.softmax = nn.Softmax(dim=1)
+
+        from networks.cyclegan.cycle_gan_model import CycleGANModel
+
+        self.cycle_gan_net = CycleGANModel()
+        options = create_option(
+            "C:/Users/User/Desktop/Kevin/pytorch-CycleGAN-and-pix2pix/checkpoints/maps_cyclegan/opt.txt"
+        )
+        options.isTrain = False
+        options.checkpoints_dir = "C:/Users/User/Desktop/Kevin/pytorch-CycleGAN-and-pix2pix/checkpoints/"
+        self.cycle_gan_net.initialize(options)
+        self.cycle_gan_net.load_networks("latest")
+
+    def update(self, images, masks, modalities, alpha, beta=0.75, gamma=0.2):
+        self.grl.set_alpha(alpha)
+        pl_threshold = gamma
+
+        masks = list(masks)
+        self.optimizer.zero_grad()
+
+        # Predictor branch
+        _features = {}
+        _seg_losses = {}
+        _dom_pred_logits = {}
+
+        self.cycle_gan_net.set_input(
+            {
+                "A": images[0],
+                "B": images[1],
+                "A_paths": "",
+                "B_paths": "",
+            }
+        )
+        self.cycle_gan_net.forward()
+
+        for i in [0, 1]:
+            skip_outputs, _features[i] = self.feat_extractor(images[i])
+            output = self.predictor((skip_outputs, _features[i]))
+            if i == 0:
+                fake_image = self.cycle_gan_net.fake_B
+            else:
+                fake_image = self.cycle_gan_net.fake_A
+            fake_image.require_grad = False
+            pseudo_softmax = self.predictor(self.feat_extractor(fake_image))
+            # pseudo_softmax *= pseudo_softmax > pl_threshold
+            masks[i] += torch.argmax(pseudo_softmax, dim=1, keepdim=True) * (masks[i] == 0)
+            pseudo_label = torch.argmax(pseudo_softmax, dim=1, keepdim=True)
+            pseudo_foreground = set(torch.unique(pseudo_label).cpu().numpy()) - {0}
+
+            if modalities[i][0] == "ct":
+                foreground = list(set(self.ct_foreground) | pseudo_foreground)
+            elif modalities[i][0] == "mr":
+                foreground = list(set(self.mr_foreground) | pseudo_foreground)
+            else:
+                raise ValueError(f"Invalid modality {modalities[i][0]}")
+
+            loss = TargetAdaptativeLoss(self.num_classes, foreground)
+            # loss = DiceCELoss(to_onehot_y=True, softmax=True)
+            _seg_losses[i] = loss(output, masks[i])
+            _seg_losses[i].backward(retain_graph=True)
+        seg_loss = _seg_losses[0] + _seg_losses[1]
+
+        # Domain Classifier branch: predict domain equivalent
+        for i in [0, 1]:
+            _dom_pred_logits[i] = self.dom_classifier(self.grl.apply(_features[i]))
+        dom_pred_logits = torch.cat([_dom_pred_logits[0], _dom_pred_logits[1]])
+
+        if modalities[0][0] == "ct":
+            dom_true_label = torch.cat(
+                (
+                    torch.ones(_dom_pred_logits[0].shape, device="cuda"),
+                    torch.zeros(_dom_pred_logits[1].shape, device="cuda"),
+                )
+            )
+        else:
+            dom_true_label = torch.cat(
+                (
+                    torch.zeros(_dom_pred_logits[0].shape, device="cuda"),
+                    torch.ones(_dom_pred_logits[1].shape, device="cuda"),
+                )
+            )
+
+        adv_loss = self.adv_loss(dom_pred_logits, dom_true_label)
+
+        adv_loss.backward()
+        # if adv_loss < 0.5:
+        #     adv_loss.backward()
+        # else:
+        #     _seg_losses[0].backward(retain_graph=True)
+        #     _seg_losses[1].backward(retain_graph=True)
+        #     adv_loss.backward()
+
+        self.optimizer.step()
+        return seg_loss.item(), adv_loss.item()
+
+
+class Options:
+    def __init__(self, properties):
+        for key, value in properties.items():
+            setattr(self, key, self.coerce_value(key, value))
+
+    def coerce_value(self, key, value):
+        if value is None:
+            return None
+
+        if key == "gpu_ids":
+            try:
+                # Try to convert the value into a list of integers
+                value = [int(v) for v in value.strip("[]").split(",")] if value else []
+            except ValueError:
+                # If conversion fails, keep it as an empty list
+                value = []
+        else:
+            try:
+                # Try to coerce the value into an int
+                value = int(value)
+            except ValueError:
+                try:
+                    # Try to coerce the value into a float
+                    value = float(value)
+                except ValueError:
+                    # If neither int nor float, keep it as a string
+                    pass
+        return value
+
+
+def create_option(file_path):
+    # Read the content from the text file
+    with open(file_path, "r") as file:
+        content = file.read()
+
+    # Split the content into lines
+    lines = content.split("\n")
+
+    # Create a dictionary to store the key-value pairs
+    properties = {}
+    for line in lines:
+        line = line.strip()
+        if line.startswith("-"):
+            continue
+        if line:
+            key_value = line.split(": ")
+            key = key_value[0]
+            value = key_value[1] if len(key_value) > 1 else None
+            properties[key] = value
+
+    # Create an instance of the Options class with the extracted properties
+    options = Options(properties)
+    return options

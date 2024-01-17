@@ -27,6 +27,7 @@ from modules.mixins.dann_mixins import (
     CAMPseudoLabel,
     CAMPseudoLabel2d,
     ConterfactucalAlignmentMixin,
+    CycleganDANN2d,
     PredictDomainEquivalenceMixin,
     RandomPairInputMixin,
 )
@@ -59,7 +60,7 @@ class GradientReversalLayer(torch.autograd.Function):
 
 
 # Define a mixin for use in the domain adversarial neural network (DANN)
-Mixin = BasicUNet2dMixin  # Using 2D UNet architecture for feature extraction
+Mixin = CycleganDANN2d  # Using 2D UNet architecture for feature extraction
 
 
 # Define the DANN module for medical image segmentation
@@ -133,12 +134,12 @@ class DANNModule(Mixin):
 
         # Define losses for segmentation and adversarial training
         self.ct_tal = (
-            TargetAdaptativeLoss(num_classes=self.num_classes, foreground=ct_foreground)
+            TargetAdaptativeLoss(num_classes=self.num_classes, foreground=ct_foreground, device="cuda")
             if self.ct_background is not None
             else DiceCELoss(to_onehot_y=True, softmax=True)
         )
         self.mr_tal = (
-            TargetAdaptativeLoss(num_classes=self.num_classes, foreground=mr_foreground)
+            TargetAdaptativeLoss(num_classes=self.num_classes, foreground=mr_foreground, device="cuda")
             if self.mr_background is not None
             else DiceCELoss(to_onehot_y=True, softmax=True)
         )
@@ -229,7 +230,7 @@ class DANNModule(Mixin):
 
 # Trainer class for DANN model
 class DANNTrainer:
-    def init(
+    def __init__(
         self,
         num_classes: int,
         max_iter: int = 10000,
