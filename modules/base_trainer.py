@@ -3,8 +3,9 @@ from typing import Literal, Optional
 import numpy as np
 import torch
 import tqdm
-from monai.data import decollate_batch
+from monai.data import Dataloader, decollate_batch
 from monai.metrics import DiceMetric, Metric
+from torch.utils.data import Dataset
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
@@ -16,9 +17,9 @@ class BaseTrainer:
     def __init__(
         self,
         num_classes: int,
-        max_iter: int = 40000,
+        max_iter: int = 10000,
         metric: Metric = DiceMetric(include_background=True, reduction="mean", get_not_nans=False),
-        eval_step: int = 500,
+        eval_step: int = 200,
         checkpoint_dir: str = "./checkpoints/",
         device: Literal["cuda", "cpu"] = "cuda",
         data_info: dict = None,
@@ -46,22 +47,44 @@ class BaseTrainer:
         module.print_info()
         print("--------")
 
-    def train(self, module, param_updater, train_dataloader, val_dataloader):
-        self.show_training_info(module, train_dataloader, val_dataloader)
-        best_metric = 0
+    def setup_data(self, train_data, val_data, *args, **kwargs):
+        if isinstance(train_data, Dataset):
+            self.train_dataloader = Dataloader(train_data, *args, **kwargs)
+        else:
+            self.train_dataloader = train_data
+
+        if isinstance(val_data, Dataset):
+            self.val_dataloader = Dataloader(val_data, *args, **kwargs)
+        else:
+            self.val_dataloader = val_data
+
+    def setup_module(self, module, *args, **kwargs):
+        module.setup(*args, **kwargs)
+
+    def train(self, module, updater, train_data=None, val_data=None, *args, **kwargs):
+        # Set up dataloaders and modules
+        self.setup_data(train_data, val_data, *args, **kwargs)
+        self.setup_module(module, *args, **kwargs)
+        self.show_training_info(module, self.train_dataloader, self.val_dataloader)
+
+        # Initalize progress bar and tensorboard writer
         train_pbar = tqdm(range(self.max_iter), dynamic_ncols=True)
         writer = SummaryWriter(log_dir=self.checkpoint_dir)
         writer.add_scalar(f"train/{self.metric.__class__.__name__}", 0, 0)  # validation metric starts from zero
+
+        # Initial stage. Note: updater(module) checks the module and returns a partial func of updating parameters.
+        best_metric = 0
+        update = updater(module)
 
         for step in train_pbar:
             module.train()
 
             # Backpropagation
-            batch = next(iter(train_dataloader))
+            batch = next(iter(self.train_dataloader))
             images, masks = batch["image"].to(self.device), batch["label"].to(self.device)
             modality_label = batch["modality"][0]
             modality = None if not self.partially_labelled else 0 if modality_label == "ct" else 1  # ct -> 0, mr -> 1
-            loss = param_updater(module)(images, masks, modality)
+            loss = update(images, masks, modality)
 
             # Update progress bar and summary writer
             _info = {"step": step + 1, "max_iter": self.max_iter, "modality_label": modality_label, "loss": loss}
@@ -71,7 +94,7 @@ class BaseTrainer:
             # Validation
             if ((step + 1) % self.eval_step == 0) or (step == self.max_iter - 1):
                 validator = BaseValidator(self.metric, is_train=True, partially_labelled=self.partially_labelled)
-                val_metrics = validator(module, val_dataloader, global_step=step)
+                val_metrics = validator(module, self.val_dataloader, global_step=step)
 
                 # Update summary writer
                 writer.add_scalar(f"val/{self.metric.__class__.__name__}:Average", val_metrics["mean"], step)
