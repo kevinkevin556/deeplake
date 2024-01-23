@@ -12,6 +12,12 @@ from tqdm.auto import tqdm
 
 
 def get_output_and_mask(samples, num_classes, background=[0]):
+    if isinstance(background, (np.ndarray, torch.Tensor)):
+        background = background.tolist()
+    if isinstance(background, tuple):
+        background = list(background)
+    assert isinstance(background, list)
+
     if background != [0]:
         postprocess = {
             "x": Compose(
@@ -74,8 +80,8 @@ class BaseValidator:
                 # Infer, decollate data into list of samples, and postprocess both predictions and labels
                 images, masks = batch["image"].to(self.device), batch["label"].to(self.device)
                 modality_label = batch["modality"][0]
-                num_classes = int(batch["num_classes"][0])
-                background_classes = batch["background_classes"][0]
+                num_classes = int(batch["num_classes"])
+                background_classes = batch["background_classes"].numpy().flatten()
 
                 assert modality_label in ("ct", "mr"), f"Unknown/Invalid modality {modality_label}"
                 assert 0 in background_classes, f"0 should be included in background_classes"
