@@ -22,6 +22,8 @@ DataLoader = Union[MonaiDataLoader, PyTorchDataLoader]
 
 
 class SegmentationModule(nn.Module):
+    alias = "SegNet"
+
     def __init__(
         self,
         net: nn.Module,
@@ -89,6 +91,8 @@ class SegmentationModule(nn.Module):
 
 
 class SegmentationEncoderDecoder(nn.Module):
+    alias = "SegEncoderDecoder"
+
     def __init__(
         self,
         feat_extractor: nn.Module,
@@ -157,6 +161,8 @@ class SegmentationEncoderDecoder(nn.Module):
 class SegmentationUpdater(BaseUpdater):
     """A simple updater to update parameters in a segmentation module."""
 
+    alias = "SegUpdater"
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -211,6 +217,8 @@ def chain_shuffle(*dataloaders):
 
 
 class SegmentationTrainer(BaseTrainer):
+    alias = "SegTrainer"
+
     def __init__(
         self,
         max_iter: int = 10000,
