@@ -22,6 +22,9 @@ class BaseUpdater:
     def check_module(self, module: nn.Module) -> None:
         raise NotImplementedError
 
+    def get_alias(self):
+        return getattr(self, "alias", self.__class__.__name__)
+
     def update(
         self,
         module: nn.Module,

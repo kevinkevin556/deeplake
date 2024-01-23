@@ -58,6 +58,9 @@ class BaseTrainer:
             )
         self.pbar_description = "Training ({step} / {max_iter} Steps) ({modality_label}) (loss={loss:2.5f})"
 
+    def get_alias(self):
+        return getattr(self, "alias", self.__class__.__name__)
+
     # auxilary function to show training info before training procedure starts
     def show_training_info(self, module, train_dataloader, val_dataloader):
         print("--------")
