@@ -1,26 +1,24 @@
 import os
 from pathlib import Path
-from typing import Final, Literal, Optional
+from typing import Literal, Optional, Tuple, Union
 
 import numpy as np
 import torch
-import tqdm
-from monai.data import DataLoader, decollate_batch
+from monai.data import DataLoader as MonaiDataLoader
 from monai.inferers import sliding_window_inference
 from monai.losses import DiceCELoss
 from monai.metrics import DiceMetric, Metric
 from torch import nn
 from torch.nn.modules.loss import _Loss
 from torch.optim import SGD, Adam, AdamW
-from torch.utils.data import ConcatDataset, Dataset
+from torch.utils.data import DataLoader as PyTorchDataLoader
 
 from lib.loss.target_adaptative_loss import TargetAdaptativeLoss
-from lib.utils.validation import get_output_and_mask
-from networks.uxnet3d.network_backbone import UXNETDecoder, UXNETEncoder
 
 from .base_trainer import BaseTrainer
+from .base_updater import BaseUpdater
 
-torch.backends.cudnn.benchmark = True
+DataLoader = Union[MonaiDataLoader, PyTorchDataLoader]
 
 
 class SegmentationModule(nn.Module):
@@ -33,6 +31,7 @@ class SegmentationModule(nn.Module):
         optimizer: str = "AdamW",
         lr: float = 0.0001,
         device: Literal["cuda", "cpu"] = "cuda",
+        pretrained: Optional[Path] = None,
     ):
         super().__init__()
         self.roi_size = roi_size
@@ -53,6 +52,9 @@ class SegmentationModule(nn.Module):
             self.optimizer = Adam(differentiable_params, lr=self.lr)
         if optimizer == "SGD":
             self.optimizer = SGD(differentiable_params, lr=self.lr)
+
+        if pretrained:
+            self.load(pretrained)
 
     def forward(self, x):
         y = self.net(x)
@@ -152,8 +154,11 @@ class SegmentationEncoderDecoder(nn.Module):
             self.criterion = (ct_criterion, mr_criterion)
 
 
-class SegmentationUpdater:
+class SegmentationUpdater(BaseUpdater):
     """A simple updater to update parameters in a segmentation module."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
     def check_module(self, module):
         assert isinstance(module, torch.nn.Module), "The specified module should inherit torch.nn.Module."
@@ -165,7 +170,7 @@ class SegmentationUpdater:
                 module, component, False
             ), "The specified module should incoporate component/method: {component}"
 
-    def update(self, module, images, masks, modalities):
+    def update(self, module, images, masks, modalities=None):
         module.optimizer.zero_grad()
         output = module.forward(images)
         loss = module.criterion(output, masks)
@@ -174,43 +179,87 @@ class SegmentationUpdater:
         return loss.item()
 
 
-def concat(dataset):
-    if dataset[0] and dataset[1]:
-        return ConcatDataset(dataset)
-    elif dataset[0]:
-        return dataset[0]
-    elif dataset[1]:
-        return dataset[1]
-    else:
-        raise ValueError("Either index 0 or 1 should be valid dataset.")
+class ChainShuffleIterator:
+    def __init__(self, *dataloaders):
+        self.dataloaders = dataloaders
+        self.num_dataloaders = len(dataloaders)
+        self.total_batches = [len(dl) for dl in self.dataloaders]
+
+    def __len__(self):
+        return sum(self.total_batches)
+
+    def __iter__(self):
+        self.iterator_list = [iter(dl) for dl in self.dataloaders]
+        self.remaining_batches = np.array(self.total_batches.copy())
+        return self
+
+    def __next__(self):
+        assert sum(self.remaining_batches) >= 0, "Sum of remaining batches should be greater than or equal to 0"
+
+        if np.sum(self.remaining_batches) > 0:
+            rng = np.random.default_rng()
+            sample_probs = self.remaining_batches / np.sum(self.remaining_batches)
+            dataloader_idx = rng.choice(range(self.num_dataloaders), size=1, p=sample_probs)[0]
+            self.remaining_batches[dataloader_idx] -= 1
+            return next(self.iterator_list[dataloader_idx])
+        else:
+            raise StopIteration
+
+
+def chain_shuffle(*dataloaders):
+    return ChainShuffleIterator(*dataloaders)
 
 
 class SegmentationTrainer(BaseTrainer):
     def __init__(
         self,
-        num_classes: int,
         max_iter: int = 10000,
-        metric: Metric = DiceMetric(include_background=True, reduction="mean", get_not_nans=False),
         eval_step: int = 500,
+        metric: Metric = DiceMetric(include_background=True, reduction="mean", get_not_nans=False),
         checkpoint_dir: str = "./checkpoints/",
         device: Literal["cuda", "cpu"] = "cuda",
-        data_info: dict = None,
-        partially_labelled: bool = False,
+        dev: bool = False,
     ):
-        super().__init__(
-            num_classes, max_iter, metric, eval_step, checkpoint_dir, device, data_info, partially_labelled
+        super().__init__(max_iter, eval_step, metric, checkpoint_dir, device, dev)
+
+    def train(
+        self,
+        module,
+        updater,
+        *,
+        train_dataloader: Optional[DataLoader] = None,
+        val_dataloader: Optional[DataLoader] = None,
+        ct_dataloader: Optional[Tuple[DataLoader, DataLoader]] = None,
+        mr_dataloader: Optional[Tuple[DataLoader, DataLoader]] = None,
+    ):
+        valid_ct_data = ct_dataloader[0] and ct_dataloader[1]
+        valid_mr_data = mr_dataloader[0] and mr_dataloader[1]
+
+        if valid_ct_data and valid_mr_data:
+            train_dataloader = chain_shuffle(ct_dataloader[0], mr_dataloader[0])
+            val_dataloader = chain_shuffle(ct_dataloader[1], mr_dataloader[1])
+        elif valid_ct_data:
+            train_dataloader, val_dataloader = ct_dataloader[0], ct_dataloader[1]
+        elif valid_mr_data:
+            train_dataloader, val_dataloader = mr_dataloader[0], mr_dataloader[1]
+        else:
+            train_dataloader = train_dataloader
+            val_dataloader = val_dataloader
+
+        if train_dataloader is None:
+            raise ValueError(
+                "No dataloader specified for training."
+                "Please provide a valid train_dataloader or both ct_dataloader and mr_dataloader."
+            )
+        if val_dataloader is None:
+            raise ValueError(
+                "No dataloader specified for validation."
+                "Please provide a valid val_dataloader or both ct_dataloader and mr_dataloader."
+            )
+
+        super().train(
+            module,
+            updater,
+            train_dataloader=train_dataloader,
+            val_dataloader=val_dataloader,
         )
-
-    def setup_data(self, train_data, val_data, batch_size, dev, *args, **kwargs):
-        if isinstance(train_data, Dataset):
-            self.train_dataloader = DataLoader(concat(train_data), batch_size=batch_size, shuffle=~dev, pin_memory=True)
-        else:
-            self.train_dataloader = train_data
-
-        if isinstance(val_data, Dataset):
-            self.val_dataloader = DataLoader(concat(val_data), batch_size=1, shuffle=False, pin_memory=True)
-        else:
-            self.val_dataloader = val_data
-
-    def train(self, module, updater, train_data, val_data, *args, **kwargs):
-        super().train(module, updater, train_data, val_data, *args, **kwargs)
