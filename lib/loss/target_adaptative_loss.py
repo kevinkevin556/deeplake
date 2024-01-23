@@ -1,7 +1,7 @@
-import numpy as np
+from typing import Literal
+
 import torch
 import torch.nn.functional as F
-from einops import einsum
 from numpy import ndarray
 from torch import Tensor
 from torch.nn import NLLLoss
@@ -23,11 +23,15 @@ def channelwise_matmul(input, other):
 
 
 class TargetAdaptativeLoss(_Loss):
-    def __init__(self, num_classes, foreground, device="cuda"):
+    def __init__(self, num_classes: int, background_classes: list, device: Literal["cuda", "cpu"] = "cuda"):
         super().__init__()
         self.num_classes = num_classes
-        self.foreground = foreground.tolist() if isinstance(foreground, (Tensor, ndarray)) else foreground
-        self.background = list(set(range(1, self.num_classes)) - set(self.foreground))
+        if isinstance(background_classes, (Tensor, ndarray)):
+            self.background = background_classes.tolist()
+        else:
+            self.background = background_classes
+        assert isinstance(self.background, (list, tuple))
+        self.foreground = list(set(range(1, self.num_classes)) - set(self.background))
 
         # probability mergeing matrix
         self.prob_merge_mat = torch.ones((num_classes, 1), requires_grad=False)
