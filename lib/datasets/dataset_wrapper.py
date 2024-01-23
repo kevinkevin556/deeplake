@@ -1,11 +1,9 @@
+import warnings
 from abc import ABC
 from typing import Callable, Optional
 
 from jsonargparse.typing import Path_drw
-from medaset import amos
-from medaset.transforms import ApplyMaskMappingd, BackgroundifyClassesd
 from monai.data import DataLoader
-from monai.transforms import Compose, Transform
 
 
 class Dataset(ABC):
@@ -72,7 +70,8 @@ class Dataset(ABC):
 
     def get_data(self):
         if not self.in_use:
-            raise ValueError("The dataset is not in use. The method get_data() should not be called in this case.")
+            warnings.warn("The dataset is not in use. The method get_data() will return (None, None, None).")
+            return None, None, None
         elif self.return_dataloader:
             return (
                 DataLoader(self.train_dataset, batch_size=self.train_batch_size, shuffle=~self.dev),
