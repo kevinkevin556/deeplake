@@ -1,5 +1,6 @@
 from typing import Optional, Sequence, Union
 
+import numpy as np
 from medaset import amos
 
 from .dataset_wrapper import Dataset
@@ -19,11 +20,11 @@ class _AmosDatasetWithBackgroundInfo(amos.AmosDataset):
         output = super().__getitem__(index)
         if isinstance(output, dict):
             output["num_classes"] = self.num_classes
-            output["background_classes"] = self.background_classes
+            output["background_classes"] = np.array(self.background_classes)
         if isinstance(output, list):
             for item in output:
                 item["num_classes"] = self.num_classes
-                item["background_classes"] = self.background_classes
+                item["background_classes"] = np.array(self.background_classes)
         return output
 
 
