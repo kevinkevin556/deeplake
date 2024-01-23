@@ -1,13 +1,13 @@
+import itertools
 from typing import Literal, Optional
 
 import numpy as np
 import torch
 import tqdm
 from medaset.transforms import BackgroundifyClasses
-from monai.data import decollate_batch
-from monai.metrics import DiceMetric, Metric
+from monai.data import DataLoader, decollate_batch
+from monai.metrics import Metric
 from monai.transforms import AsDiscrete, Compose
-from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
 
@@ -57,7 +57,17 @@ class BaseValidator:
         module.eval()
         val_metrics = {"ct": [], "mr": []}
         metric_means = {"mean": None, "ct": None, "mr": None}
-        pbar = tqdm(dataloader, dynamic_ncols=True)
+
+        if not isinstance(dataloader, (list, tuple)):
+            dataloader = [dataloader]
+        else:
+            dataloader = [dl for dl in dataloader if dl is not None]
+        data_iter = itertools.chain(*dataloader)
+        pbar = tqdm(
+            data_iter,
+            total=sum([len(dl) for dl in dataloader]),
+            dynamic_ncols=True,
+        )
 
         with torch.no_grad():
             for batch in pbar:
@@ -81,14 +91,14 @@ class BaseValidator:
                 self.metric.reset()
 
                 # Update progressbar
-                _info = {
+                info = {
                     "val_on_partial": set(background_classes) > set([0]),
                     "metric_name": self.metric.__class__.__name__,
                     "batch_metric": batch_metric,
                     "global_step": global_step,
                 }
-                _desc = self.pbar_description.format(**_info)
-                pbar.set_description(_desc)
+                desc = self.pbar_description.format(**info)
+                pbar.set_description(desc)
 
         metric_means["mean"] = np.mean(val_metrics["ct"] + val_metrics["mr"])
         metric_means["ct"] = np.mean(val_metrics["ct"]) if len(val_metrics["ct"]) > 0 else np.nan
