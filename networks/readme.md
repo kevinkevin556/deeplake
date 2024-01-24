@@ -1,1 +1,0 @@
-The source code in this directory is from 3D-UXNet.
