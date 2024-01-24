@@ -1,5 +1,5 @@
 import itertools
-from typing import Literal, Optional
+from typing import Literal, Optional, Sequence, Union
 
 import numpy as np
 import torch
@@ -8,6 +8,7 @@ from medaset.transforms import BackgroundifyClasses
 from monai.data import DataLoader, decollate_batch
 from monai.metrics import Metric
 from monai.transforms import AsDiscrete, Compose
+from torch import nn
 from tqdm.auto import tqdm
 
 
@@ -56,10 +57,20 @@ class BaseValidator:
         else:
             self.pbar_description = "Validate (Partially-labelled:{val_on_partial}) ({metric_name}={batch_metric:2.5f})"
 
-    def __call__(self, module, dataloader, global_step: Optional[int] = None, **kwargs):
-        return self.validation(module, dataloader, global_step, **kwargs)
+    def __call__(
+        self,
+        module: nn.Module,
+        dataloader: Union[DataLoader, Sequence[DataLoader]],
+        global_step: Optional[int] = None,
+    ) -> dict:
+        return self.validation(module, dataloader, global_step)
 
-    def validation(self, module, dataloader, global_step: Optional[int] = None, **kwargs):
+    def validation(
+        self,
+        module: nn.Module,
+        dataloader: Union[DataLoader, Sequence[DataLoader]],
+        global_step: Optional[int] = None,
+    ) -> dict:
         module.eval()
         val_metrics = {"ct": [], "mr": []}
         metric_means = {"mean": None, "ct": None, "mr": None}
