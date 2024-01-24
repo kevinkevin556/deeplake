@@ -87,7 +87,6 @@ class BaseTrainer:
         # Initalize progress bar and tensorboard writer
         train_pbar = tqdm(range(self.max_iter), dynamic_ncols=True)
         writer = SummaryWriter(log_dir=self.checkpoint_dir)
-        writer.add_scalar(f"train/{self.metric.__class__.__name__}", 0, 0)  # validation metric starts from zero
 
         # Initial stage. Note: updater(module) checks the module and returns a partial func of updating parameters.
         best_metric = 0
