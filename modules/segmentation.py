@@ -43,8 +43,6 @@ class SegmentationModule(nn.Module):
         self.lr = lr
         self.device = device
 
-        self.net.to(device)
-
         params = self.net.parameters()
         differentiable_params = [p for p in params if p.requires_grad]
         # TODO: replace these assignment with partials
@@ -57,6 +55,8 @@ class SegmentationModule(nn.Module):
 
         if pretrained:
             self.load(pretrained)
+
+        self.to(device)
 
     def forward(self, x):
         y = self.net(x)
