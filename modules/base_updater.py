@@ -1,8 +1,7 @@
-from contextlib import nullcontext
-from functools import partial
-from typing import Optional
+from __future__ import annotations
 
-import torch
+from functools import partial
+
 from torch import TensorType, nn
 
 
@@ -30,6 +29,6 @@ class BaseUpdater:
         module: nn.Module,
         images: TensorType,
         masks: TensorType,
-        modalities: Optional[int] = None,
+        modalities: int | None = None,
     ) -> float:
         raise NotImplementedError

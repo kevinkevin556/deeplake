@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 import warnings
 from pathlib import Path
-from typing import Literal, Optional, Tuple, Union
+from typing import Literal, Optional, Union
 
 import numpy as np
 import tqdm
@@ -26,16 +28,8 @@ class BaseTrainer:
         checkpoint_dir: str = "./checkpoints/",
         device: Literal["cuda", "cpu"] = "cuda",
         dev: bool = False,
-        validator: Optional[BaseValidator] = None,
+        validator: BaseValidator | None = None,
     ):
-        assert isinstance(max_iter, int)
-        assert isinstance(eval_step, int)
-        assert callable(metric)
-        assert isinstance(checkpoint_dir, (str, Path))
-        assert device in ["cuda", "cpu"]
-        assert isinstance(dev, bool)
-        assert isinstance(validator, BaseValidator) or validator is None
-
         self.max_iter = max_iter
         self.eval_step = eval_step
         self.metric = metric
@@ -78,8 +72,8 @@ class BaseTrainer:
         module: nn.Module,
         updater: BaseUpdater,
         *,
-        train_dataloader: Optional[DataLoader] = None,
-        val_dataloader: Optional[DataLoader] = None,
+        train_dataloader: DataLoader | None = None,
+        val_dataloader: DataLoader | None = None,
     ):
         # Set up dataloaders and modules
         self.show_training_info(module, train_dataloader, val_dataloader)
@@ -99,7 +93,7 @@ class BaseTrainer:
             batch = next(iter(train_dataloader))
             images, masks = batch["image"].to(self.device), batch["label"].to(self.device)
             modality_label = batch["modality"][0]
-            assert modality_label in ["ct", "mr"]
+            assert modality_label in ("ct", "mr")
             modality = 0 if modality_label == "ct" else 1
             loss = module_update(images, masks, modality)
 

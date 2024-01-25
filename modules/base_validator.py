@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import itertools
-from typing import Literal, Optional, Sequence, Union
+from collections.abc import Sequence
+from typing import Literal
 
 import numpy as np
 import torch
@@ -12,7 +15,7 @@ from torch import nn
 from tqdm.auto import tqdm
 
 
-def get_output_and_mask(samples, num_classes, background=[0]):
+def get_output_and_mask(samples: Sequence, num_classes: int, background: Sequence = (0,)):
     if isinstance(background, (np.ndarray, torch.Tensor)):
         background = background.tolist()
     if isinstance(background, tuple):
@@ -60,16 +63,16 @@ class BaseValidator:
     def __call__(
         self,
         module: nn.Module,
-        dataloader: Union[DataLoader, Sequence[DataLoader]],
-        global_step: Optional[int] = None,
+        dataloader: DataLoader | Sequence[DataLoader],
+        global_step: int | None = None,
     ) -> dict:
         return self.validation(module, dataloader, global_step)
 
     def validation(
         self,
         module: nn.Module,
-        dataloader: Union[DataLoader, Sequence[DataLoader]],
-        global_step: Optional[int] = None,
+        dataloader: DataLoader | Sequence[DataLoader],
+        global_step: int | None = None,
     ) -> dict:
         module.eval()
         val_metrics = {"ct": [], "mr": []}
@@ -82,7 +85,7 @@ class BaseValidator:
         data_iter = itertools.chain(*dataloader)
         pbar = tqdm(
             data_iter,
-            total=sum([len(dl) for dl in dataloader]),
+            total=sum(len(dl) for dl in dataloader),
             dynamic_ncols=True,
         )
 
@@ -94,8 +97,8 @@ class BaseValidator:
                 num_classes = int(batch["num_classes"])
                 background_classes = batch["background_classes"].numpy().flatten()
 
-                assert modality_label in ("ct", "mr"), f"Unknown/Invalid modality {modality_label}"
-                assert 0 in background_classes, f"0 should be included in background_classes"
+                assert modality_label in set(["ct", "mr"]), f"Unknown/Invalid modality {modality_label}"
+                assert 0 in background_classes, "0 should be included in background_classes"
 
                 infer_out = module.inference(images)
                 samples = decollate_batch({"prediction": infer_out, "ground_truth": masks})
