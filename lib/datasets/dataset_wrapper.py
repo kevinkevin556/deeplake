@@ -1,9 +1,12 @@
+from __future__ import annotations
+
 import warnings
 from abc import ABC
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from jsonargparse.typing import Path_drw
 from monai.data import DataLoader
+from monai.data import Dataset as MonaiDataset
 
 
 class Dataset(ABC):
@@ -38,8 +41,8 @@ class Dataset(ABC):
         num_classes: int,
         train_background_classes: list,
         test_background_classes: list,
-        train_transform: Optional[Callable] = None,
-        test_transform: Optional[Callable] = None,
+        train_transform: Callable | None = None,
+        test_transform: Callable | None = None,
         holdout_ratio: float = 0.1,
         cache_rate: float = 0.1,
         num_workers: int = 2,
@@ -68,11 +71,16 @@ class Dataset(ABC):
         if 0 not in test_background_classes:
             raise ValueError("Original background class (0) is not included in test_background_classes")
 
+        self.train_dataset = MonaiDataset({"image": [], "label": []})
+        self.val_dataset = MonaiDataset({"image": [], "label": []})
+        self.test_dataset = MonaiDataset({"image": [], "label": []})
+
     def get_data(self):
         if not self.in_use:
             warnings.warn("The dataset is not in use. The method get_data() will return (None, None, None).")
             return None, None, None
-        elif self.return_dataloader:
+
+        if self.return_dataloader:
             return (
                 DataLoader(self.train_dataset, batch_size=self.train_batch_size, shuffle=~self.dev),
                 DataLoader(self.val_dataset, batch_size=self.train_batch_size, shuffle=False),

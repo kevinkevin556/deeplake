@@ -1,4 +1,4 @@
-from typing import Optional, Sequence, Union
+from __future__ import annotations
 
 import numpy as np
 from medaset import amos
@@ -9,12 +9,15 @@ from .dataset_wrapper import Dataset
 class _AmosDatasetWithBackgroundInfo(amos.AmosDataset):
     def __init__(
         self,
-        background_classes: list = [0],
+        background_classes: list | None = None,
         *args,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
-        self.background_classes = background_classes
+        if background_classes:
+            self.background_classes = background_classes
+        else:
+            self.background_classes = [0]
 
     def __getitem__(self, index):
         output = super().__getitem__(index)
@@ -76,7 +79,7 @@ class AmosCtDataset(Dataset):
 
 
 class AmosMrDataset(Dataset):
-    def __init__(self, sequence: Optional[str] = None, *args, **kwargs):
+    def __init__(self, *args, sequence: str | None = None, **kwargs):
         super().__init__(*args, **kwargs)
         if sequence is not None:
             raise ValueError(f"No sequence to determine in AMOS dataset. Got {sequence}")
