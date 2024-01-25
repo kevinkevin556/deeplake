@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import warnings
-from pathlib import Path
-from typing import Literal, Optional, Union
+from typing import Literal, Union
 
 import numpy as np
 import tqdm

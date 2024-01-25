@@ -2,10 +2,8 @@ import datetime
 import os
 from datetime import datetime
 
-from jsonargparse import CLI, ArgumentParser
-from jsonargparse.typing import path_type
+from jsonargparse import CLI
 from monai.utils import set_determinism
-from rich_argparse import RichHelpFormatter
 from torch import nn
 
 from lib.datasets.dataset_wrapper import Dataset

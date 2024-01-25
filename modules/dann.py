@@ -1,4 +1,5 @@
-import itertools
+from __future__ import annotations
+
 import os
 import random
 from pathlib import Path
@@ -6,7 +7,7 @@ from typing import Literal, Optional, Tuple
 
 import numpy as np
 import torch
-from monai.data import DataLoader, decollate_batch
+from monai.data import DataLoader
 from monai.inferers import sliding_window_inference
 from monai.losses import DiceCELoss
 from monai.metrics import DiceMetric, Metric
@@ -19,7 +20,6 @@ from tqdm import tqdm
 
 from .base_trainer import BaseTrainer
 from .base_updater import BaseUpdater
-from .base_validator import get_output_and_mask
 
 
 # Define a gradient reversal layer for domain adaptation in neural networks
@@ -35,10 +35,10 @@ class GradientReversalLayer(torch.autograd.Function):
         GradientReversalLayer.alpha = alpha
 
     @staticmethod
-    def forward(ctx, input):
+    def forward(ctx, x):
         # Forward pass just returns the input
         ctx.alpha = GradientReversalLayer.alpha
-        return input
+        return x
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -63,7 +63,7 @@ class DANNModule(nn.Module):
         lr: float = 0.0001,
         default_forward_branch: int = 0,
         device: Literal["cuda", "cpu"] = "cuda",
-        pretrained: Optional[Path] = None,
+        pretrained: Path | None = None,
     ):
         super().__init__()
         self.default_forward_branch = default_forward_branch
@@ -159,7 +159,7 @@ class DANNUpdater(BaseUpdater):
     def check_module(self, module):
         assert isinstance(module, torch.nn.Module), "The specified module should inherit torch.nn.Module."
         assert isinstance(module, DANNModule), "The specified module should inherit DANNModule."
-        for component in [
+        for component in (
             "ct_criterion",
             "mr_criterion",
             "optimizer",
@@ -168,7 +168,7 @@ class DANNUpdater(BaseUpdater):
             "dom_classifier",
             "grl",
             "adv_loss",
-        ]:
+        ):
             assert getattr(
                 module, component, False
             ), "The specified module should incoporate component/method: {component}"
@@ -262,8 +262,8 @@ class DANNTrainer(BaseTrainer):
         module,
         updater,
         *,
-        ct_dataloader: Optional[Tuple[DataLoader, DataLoader]] = None,
-        mr_dataloader: Optional[Tuple[DataLoader, DataLoader]] = None,
+        ct_dataloader: tuple(DataLoader, DataLoader) | None = None,
+        mr_dataloader: tuple(DataLoader, DataLoader) | None = None,
     ):
         # Display training information and initialize metrics
         self.show_training_info(module, ct_dataloader, mr_dataloader)
@@ -301,8 +301,8 @@ class DANNTrainer(BaseTrainer):
                 "adv_loss": adv_loss,
             }
             train_pbar.set_description(self.pbar_description.format(**info))
-            writer.add_scalar(f"train/seg_loss", seg_loss, step)
-            writer.add_scalar(f"train/adv_loss", adv_loss, step)
+            writer.add_scalar("train/seg_loss", seg_loss, step)
+            writer.add_scalar("train/adv_loss", adv_loss, step)
 
             # Perform validation at specified intervals and save model if performance improves
             if ((step + 1) % self.eval_step == 0) or (step == self.max_iter - 1):

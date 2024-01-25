@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 import os
 from pathlib import Path
-from typing import Literal, Optional, Tuple, Union
+from typing import Literal, Union
 
 import numpy as np
 import torch
@@ -12,8 +14,6 @@ from torch import nn
 from torch.nn.modules.loss import _Loss
 from torch.optim import SGD, Adam, AdamW
 from torch.utils.data import DataLoader as PyTorchDataLoader
-
-from lib.loss.target_adaptative_loss import TargetAdaptativeLoss
 
 from .base_trainer import BaseTrainer
 from .base_updater import BaseUpdater
@@ -33,7 +33,7 @@ class SegmentationModule(nn.Module):
         optimizer: str = "AdamW",
         lr: float = 0.0001,
         device: Literal["cuda", "cpu"] = "cuda",
-        pretrained: Optional[Path] = None,
+        pretrained: Path | None = None,
     ):
         super().__init__()
         self.roi_size = roi_size
@@ -78,16 +78,6 @@ class SegmentationModule(nn.Module):
         print("Module:", self.net.__class__.__name__)
         print("Optimizer:", self.optimizer.__class__.__name__, f"(lr = {self.lr})")
         print("Loss function:", repr(self.criterion))
-
-    def setup(self, loss: str, modality: str, data_info: dict, *args, **kwargs):
-        if loss != "tal":
-            self.criterion = DiceCELoss(include_background=True, to_onehot_y=True, softmax=True)
-        elif modality in ["ct", "mr"]:
-            self.criterion = TargetAdaptativeLoss(data_info["num_classes"], data_info["fg"][modality], self.device)
-        else:
-            ct_criterion = TargetAdaptativeLoss(data_info["num_classes"], data_info["fg"]["ct"], self.device)
-            mr_criterion = TargetAdaptativeLoss(data_info["num_classes"], data_info["fg"]["mr"], self.device)
-            self.criterion = (ct_criterion, mr_criterion)
 
 
 class SegmentationEncoderDecoder(nn.Module):
@@ -147,31 +137,21 @@ class SegmentationEncoderDecoder(nn.Module):
         print("Optimizer:", self.optimizer.__class__.__name__, f"(lr = {self.lr})")
         print("Loss function:", repr(self.criterion))
 
-    def setup(self, loss: str, modality: str, data_info: dict, *args, **kwargs):
-        if loss != "tal":
-            self.criterion = DiceCELoss(include_background=True, to_onehot_y=True, softmax=True)
-        elif modality in ["ct", "mr"]:
-            self.criterion = TargetAdaptativeLoss(data_info["num_classes"], data_info["fg"][modality], self.device)
-        else:
-            ct_criterion = TargetAdaptativeLoss(data_info["num_classes"], data_info["fg"]["ct"], self.device)
-            mr_criterion = TargetAdaptativeLoss(data_info["num_classes"], data_info["fg"]["mr"], self.device)
-            self.criterion = (ct_criterion, mr_criterion)
-
 
 class SegmentationUpdater(BaseUpdater):
     """A simple updater to update parameters in a segmentation module."""
 
     alias = "SegUpdater"
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self):
+        super().__init__()
 
     def check_module(self, module):
         assert isinstance(module, torch.nn.Module), "The specified module should inherit torch.nn.Module."
         assert isinstance(
             module, (SegmentationModule, SegmentationEncoderDecoder)
         ), "The specified module should inherit SegmentationModule."
-        for component in ["criterion", "optimizer"]:
+        for component in ("criterion", "optimizer"):
             assert getattr(
                 module, component, False
             ), "The specified module should incoporate component/method: {component}"
@@ -235,10 +215,10 @@ class SegmentationTrainer(BaseTrainer):
         module,
         updater,
         *,
-        train_dataloader: Optional[DataLoader] = None,
-        val_dataloader: Optional[DataLoader] = None,
-        ct_dataloader: Optional[Tuple[DataLoader, DataLoader]] = None,
-        mr_dataloader: Optional[Tuple[DataLoader, DataLoader]] = None,
+        train_dataloader: DataLoader | None = None,
+        val_dataloader: DataLoader | None = None,
+        ct_dataloader: tuple(DataLoader, DataLoader) | None = None,
+        mr_dataloader: tuple(DataLoader, DataLoader) | None = None,
     ):
         valid_ct_data = ct_dataloader[0] and ct_dataloader[1]
         valid_mr_data = mr_dataloader[0] and mr_dataloader[1]
