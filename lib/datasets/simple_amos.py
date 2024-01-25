@@ -1,8 +1,10 @@
-from jsonargparse.typing import path_type
+from __future__ import annotations
+
 from medaset import amos
 from medaset.transforms import ApplyMaskMappingd, BackgroundifyClassesd
 from monai.transforms import Compose
 
+from .amos import _AmosDatasetWithBackgroundInfo
 from .dataset_wrapper import Dataset
 
 
@@ -23,9 +25,10 @@ class SimpleAmosCtDataset(Dataset):
                 ApplyMaskMappingd(keys=["label"], mask_mapping={10: 8}),
             ]
         )
-        assert self.num_classes == 9
+        if self.num_classes != 9:
+            raise ValueError(f"There are 9 classes in Simplified AMOS dataset. Got {self.num_classes}")
 
-        self.train_dataset = amos.AmosDataset(
+        self.train_dataset = _AmosDatasetWithBackgroundInfo(
             root_dir=self.root_dir,
             modality="ct",
             stage="train",
@@ -33,10 +36,12 @@ class SimpleAmosCtDataset(Dataset):
             mask_mapping={c: 0 for c in self.train_background_classes},
             cache_rate=self.cache_rate,
             num_workers=self.num_workers,
+            background_classes=self.train_background_classes,
         )
         setattr(self.train_dataset, "batch_size", self.train_batch_size)
+        self.train_dataset = self.train_dataset[: -int(len(self.train_dataset) * self.holdout_ratio)]
 
-        self.val_dataset = amos.AmosDataset(
+        self.val_dataset = _AmosDatasetWithBackgroundInfo(
             root_dir=self.root_dir,
             modality="ct",
             stage="val",
@@ -44,9 +49,11 @@ class SimpleAmosCtDataset(Dataset):
             mask_mapping={c: 0 for c in self.train_background_classes},
             cache_rate=self.cache_rate,
             num_workers=self.num_workers,
+            background_classes=self.train_background_classes,
         )
+        self.val_dataset = self.val_dataset[-int(len(self.val_dataset) * self.holdout_ratio) :]
 
-        self.test_dataset = amos.AmosDataset(
+        self.test_dataset = _AmosDatasetWithBackgroundInfo(
             root_dir=self.root_dir,
             modality="ct",
             stage="test",
@@ -54,11 +61,12 @@ class SimpleAmosCtDataset(Dataset):
             mask_mapping={c: 0 for c in self.test_background_classes},
             cache_rate=self.cache_rate,
             num_workers=self.num_workers,
+            background_classes=self.test_background_classes,
         )
 
 
 class SimpleAmosMrDataset(Dataset):
-    def __init__(self, sequence: type(None) = None, *args, **kwargs):
+    def __init__(self, *args, sequence: type(None) = None, **kwargs):
         super().__init__(*args, **kwargs)
         self.train_transform = Compose(
             [
@@ -74,9 +82,12 @@ class SimpleAmosMrDataset(Dataset):
                 ApplyMaskMappingd(keys=["label"], mask_mapping={10: 8}),
             ]
         )
-        assert self.num_classes == 9
+        if sequence is not None:
+            raise ValueError(f"No sequence to determine in Simplified AMOS dataset. Got {sequence}")
+        if self.num_classes != 9:
+            raise ValueError(f"There are 9 classes in Simplified AMOS dataset. Got {self.num_classes}")
 
-        self.train_dataset = amos.AmosDataset(
+        self.train_dataset = _AmosDatasetWithBackgroundInfo(
             root_dir=self.root_dir,
             modality="mr",
             stage="train",
@@ -84,10 +95,12 @@ class SimpleAmosMrDataset(Dataset):
             mask_mapping={c: 0 for c in self.train_background_classes},
             cache_rate=self.cache_rate,
             num_workers=self.num_workers,
+            background_classes=self.train_background_classes,
         )
         setattr(self.train_dataset, "batch_size", self.train_batch_size)
+        self.train_dataset = self.train_dataset[: -int(len(self.train_dataset) * self.holdout_ratio)]
 
-        self.val_dataset = amos.AmosDataset(
+        self.val_dataset = _AmosDatasetWithBackgroundInfo(
             root_dir=self.root_dir,
             modality="mr",
             stage="val",
@@ -95,9 +108,11 @@ class SimpleAmosMrDataset(Dataset):
             mask_mapping={c: 0 for c in self.train_background_classes},
             cache_rate=self.cache_rate,
             num_workers=self.num_workers,
+            background_classes=self.train_background_classes,
         )
+        self.val_dataset = self.val_dataset[-int(len(self.val_dataset) * self.holdout_ratio) :]
 
-        self.test_dataset = amos.AmosDataset(
+        self.test_dataset = _AmosDatasetWithBackgroundInfo(
             root_dir=self.root_dir,
             modality="mr",
             stage="test",
@@ -105,4 +120,5 @@ class SimpleAmosMrDataset(Dataset):
             mask_mapping={c: 0 for c in self.test_background_classes},
             cache_rate=self.cache_rate,
             num_workers=self.num_workers,
+            background_classes=self.test_background_classes,
         )
