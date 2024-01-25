@@ -108,7 +108,10 @@ disable=
     cyclic-import,
     import-error,
     duplicate-code,
-    no-else-return
+    no-else-return,
+    too-many-instance-attributes,
+    too-many-arguments,
+
 
 [REPORTS]
 
