@@ -9,8 +9,8 @@ from .dataset_wrapper import Dataset
 class _AmosDatasetWithBackgroundInfo(amos.AmosDataset):
     def __init__(
         self,
-        background_classes: list | None = None,
         *args,
+        background_classes: list | None = None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)

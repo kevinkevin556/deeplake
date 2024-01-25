@@ -8,18 +8,18 @@ from torch.nn import NLLLoss
 from torch.nn.modules.loss import _Loss
 
 
-def channelwise_matmul(input, other):
-    if len(input.shape) == 4:
+def channelwise_matmul(x1, x2):
+    if len(x1.shape) == 4:
         perm_index = (0, 2, 3, 1)
         inv_perm_index = (0, 3, 1, 2)
-    elif len(input.shape) == 5:
+    elif len(x1.shape) == 5:
         perm_index = (0, 2, 3, 4, 1)
         inv_perm_index = (0, 4, 1, 2, 3)
     else:
-        raise ValueError("Invalid input dimension.")
-    input_reshaped = input.permute(*perm_index)
-    output = torch.matmul(input_reshaped, other).permute(*inv_perm_index)
-    return output
+        raise ValueError("Invalid x1 dimension.")
+    x1_reshaped = x1.permute(*perm_index)
+    y = torch.matmul(x1_reshaped, x2).permute(*inv_perm_index)
+    return y
 
 
 class TargetAdaptativeLoss(_Loss):
