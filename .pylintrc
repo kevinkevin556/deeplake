@@ -108,8 +108,7 @@ disable=
     cyclic-import,
     import-error,
     duplicate-code,
-    no-else-return,
-    CodeDuplication
+    no-else-return
 
 [REPORTS]
 
