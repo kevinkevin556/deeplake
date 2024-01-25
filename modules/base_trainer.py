@@ -5,6 +5,7 @@ from typing import Literal, Union
 
 import numpy as np
 import tqdm
+from colorful import green, red
 from monai.data import DataLoader as MonaiDataLoader
 from monai.metrics import DiceMetric, Metric
 from torch import nn
@@ -117,13 +118,11 @@ class BaseTrainer:
                     val_metric = val_metrics["mean"]
 
                 # Update best metric
-                _green_s = lambda s: "\033[32m" + s + "\033[0m"
-                _red_s = lambda s: "\033[31m" + s + "\033[0m"
                 if val_metric > best_metric:
                     module.save(self.checkpoint_dir)
-                    msg = _green_s(f"Model saved! Validation: (New) {val_metric:2.7f} > (Old) {best_metric:2.7f}")
+                    msg = green(f"Model saved! Validation: (New) {val_metric:2.7f} > (Old) {best_metric:2.7f}")
                     best_metric = val_metric
                 else:
-                    msg = _red_s(f"No improvement. Validation: (New) {val_metric:2.7f} <= (Old) {best_metric:2.7f}")
+                    msg = red(f"No improvement. Validation: (New) {val_metric:2.7f} <= (Old) {best_metric:2.7f}")
                 msg += f" (CT) {val_metrics['ct']:2.7f} (MR) {val_metrics['mr']:2.7f}"
-                tqdm.write(msg)
+                tqdm.write(str(msg))

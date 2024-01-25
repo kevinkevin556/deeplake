@@ -111,6 +111,7 @@ disable=
     no-else-return,
     too-many-instance-attributes,
     too-many-arguments,
+    too-many-locals
 
 
 [REPORTS]

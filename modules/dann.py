@@ -3,10 +3,11 @@ from __future__ import annotations
 import os
 import random
 from pathlib import Path
-from typing import Literal, Optional, Tuple
+from typing import Literal
 
 import numpy as np
 import torch
+from colorful import green, red
 from monai.data import DataLoader
 from monai.inferers import sliding_window_inference
 from monai.losses import DiceCELoss
@@ -320,13 +321,11 @@ class DANNTrainer(BaseTrainer):
                     val_metric = val_metrics["mean"]
 
                 # Update best metric
-                _green_s = lambda s: "\033[32m" + s + "\033[0m"
-                _red_s = lambda s: "\033[31m" + s + "\033[0m"
                 if val_metric > best_metric:
                     module.save(self.checkpoint_dir)
-                    msg = _green_s(f"Model saved! Validation: (New) {val_metric:2.7f} > (Old) {best_metric:2.7f}")
+                    msg = green(f"Model saved! Validation: (New) {val_metric:2.7f} > (Old) {best_metric:2.7f}")
                     best_metric = val_metric
                 else:
-                    msg = _red_s(f"No improvement. Validation: (New) {val_metric:2.7f} <= (Old) {best_metric:2.7f}")
+                    msg = red(f"No improvement. Validation: (New) {val_metric:2.7f} <= (Old) {best_metric:2.7f}")
                 msg += f" (CT) {val_metrics['ct']:2.7f} (MR) {val_metrics['mr']:2.7f}"
-                tqdm.write(msg)
+                tqdm.write(str(msg))

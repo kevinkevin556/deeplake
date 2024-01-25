@@ -93,7 +93,7 @@ class SegmentationEncoderDecoder(nn.Module):
         optimizer: str = "AdamW",
         lr: float = 0.0001,
     ):
-        super().__init__()
+        super().__init__(self)
         self.roi_size = roi_size
         self.sw_batch_size = sw_batch_size
         self.criterion = criterion
@@ -142,9 +142,6 @@ class SegmentationUpdater(BaseUpdater):
     """A simple updater to update parameters in a segmentation module."""
 
     alias = "SegUpdater"
-
-    def __init__(self):
-        super().__init__()
 
     def check_module(self, module):
         assert isinstance(module, torch.nn.Module), "The specified module should inherit torch.nn.Module."
@@ -231,8 +228,9 @@ class SegmentationTrainer(BaseTrainer):
         elif valid_mr_data:
             train_dataloader, val_dataloader = mr_dataloader[0], mr_dataloader[1]
         else:
-            train_dataloader = train_dataloader
-            val_dataloader = val_dataloader
+            # train_dataloader = train_dataloader
+            # val_dataloader = val_dataloader
+            pass
 
         if train_dataloader is None:
             raise ValueError(

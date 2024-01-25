@@ -8,7 +8,6 @@ Created on Sun Apr 10 15:04:06 2022
 
 from __future__ import annotations
 
-import torch.nn.functional as F
 from monai.networks.blocks.dynunet_block import UnetOutBlock
 from monai.networks.blocks.unetr_block import UnetrBasicBlock, UnetrUpBlock
 from torch import nn
@@ -230,7 +229,7 @@ class UXNETEncoder(nn.Module):
         self.drop_path_rate = drop_path_rate
         self.feat_size = feat_size
         self.layer_scale_init_value = layer_scale_init_value
-        self.out_indice = [i for i in range(len(self.feat_size))]
+        self.out_indice = list(range(len(self.feat_size)))
         self.spatial_dims = spatial_dims
 
         self.uxnet_3d = uxnet_conv(
