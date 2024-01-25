@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from medaset import amos
 from medaset.transforms import ApplyMaskMappingd, BackgroundifyClassesd
 from monai.transforms import Compose
 

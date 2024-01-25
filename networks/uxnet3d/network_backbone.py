@@ -6,35 +6,36 @@ Created on Sun Apr 10 15:04:06 2022
 @author: leeh43
 """
 
-from typing import Tuple, Union
+from __future__ import annotations
 
-import torch.nn as nn
 import torch.nn.functional as F
 from monai.networks.blocks.dynunet_block import UnetOutBlock
 from monai.networks.blocks.unetr_block import UnetrBasicBlock, UnetrUpBlock
+from torch import nn
 
-from lib.models.tools.module_helper import ModuleHelper
-from lib.utils.tools.logger import Logger as Log
 from networks.uxnet3d.uxnet_encoder import uxnet_conv
 
+# from lib.models.tools.module_helper import ModuleHelper
+# from lib.utils.tools.logger import Logger as Log
 
-class ProjectionHead(nn.Module):
-    def __init__(self, dim_in, proj_dim=256, proj="convmlp", bn_type="torchbn"):
-        super(ProjectionHead, self).__init__()
 
-        Log.info("proj_dim: {}".format(proj_dim))
+# class ProjectionHead(nn.Module):
+#     def __init__(self, dim_in, proj_dim=256, proj="convmlp", bn_type="torchbn"):
+#         super().__init__()
 
-        if proj == "linear":
-            self.proj = nn.Conv2d(dim_in, proj_dim, kernel_size=1)
-        elif proj == "convmlp":
-            self.proj = nn.Sequential(
-                nn.Conv3d(dim_in, dim_in, kernel_size=1),
-                ModuleHelper.BNReLU(dim_in, bn_type=bn_type),
-                nn.Conv3d(dim_in, proj_dim, kernel_size=1),
-            )
+#         Log.info("proj_dim: {}".format(proj_dim))
 
-    def forward(self, x):
-        return F.normalize(self.proj(x), p=2, dim=1)
+#         if proj == "linear":
+#             self.proj = nn.Conv2d(dim_in, proj_dim, kernel_size=1)
+#         elif proj == "convmlp":
+#             self.proj = nn.Sequential(
+#                 nn.Conv3d(dim_in, dim_in, kernel_size=1),
+#                 ModuleHelper.BNReLU(dim_in, bn_type=bn_type),
+#                 nn.Conv3d(dim_in, proj_dim, kernel_size=1),
+#             )
+
+#     def forward(self, x):
+#         return F.normalize(self.proj(x), p=2, dim=1)
 
 
 class UXNET(nn.Module):
@@ -42,12 +43,12 @@ class UXNET(nn.Module):
         self,
         in_chans=1,
         out_chans=13,
-        depths=[2, 2, 2, 2],
-        feat_size=[48, 96, 192, 384],
+        depths=(2, 2, 2, 2),
+        feat_size=(48, 96, 192, 384),
         drop_path_rate=0,
         layer_scale_init_value=1e-6,
         hidden_size: int = 768,
-        norm_name: Union[Tuple, str] = "instance",
+        norm_name: tuple | str = "instance",
         conv_block: bool = True,
         res_block: bool = True,
         spatial_dims=3,
@@ -213,12 +214,12 @@ class UXNETEncoder(nn.Module):
     def __init__(
         self,
         in_chans=1,
-        depths=[2, 2, 2, 2],
-        feat_size=[48, 96, 192, 384],
+        depths=(2, 2, 2, 2),
+        feat_size=(48, 96, 192, 384),
         drop_path_rate=0,
         layer_scale_init_value=1e-6,
         hidden_size: int = 768,
-        norm_name: Union[Tuple, str] = "instance",
+        norm_name: tuple | str = "instance",
         res_block: bool = True,
         spatial_dims=3,
     ):
@@ -304,9 +305,9 @@ class UXNETDecoder(nn.Module):
     def __init__(
         self,
         out_chans=13,
-        feat_size=[48, 96, 192, 384],
+        feat_size=(48, 96, 192, 384),
         hidden_size: int = 768,
-        norm_name: Union[Tuple, str] = "instance",
+        norm_name: tuple | str = "instance",
         res_block: bool = True,
         spatial_dims=3,
     ):

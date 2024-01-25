@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Sequence, Union
 
 import torch
-import torch.nn as nn
 from monai.networks.layers.factories import Conv
 from monai.networks.nets.basic_unet import Down, TwoConv, UpCat
 from monai.utils import ensure_tuple_rep
@@ -19,10 +17,10 @@ class BasicUNetEncoder(nn.Module):
         spatial_dims: int = 3,
         in_channels: int = 1,
         features: Sequence[int] = (32, 32, 64, 128, 256, 32),
-        act: Union[str, tuple] = ("LeakyReLU", {"negative_slope": 0.1, "inplace": True}),
-        norm: Union[str, tuple] = ("instance", {"affine": True}),
+        act: str | tuple = ("LeakyReLU", {"negative_slope": 0.1, "inplace": True}),
+        norm: str | tuple = ("instance", {"affine": True}),
         bias: bool = True,
-        dropout: Union[float, tuple] = 0.0,
+        dropout: float | tuple = 0.0,
     ):
         super().__init__()
         fea = ensure_tuple_rep(features, 6)
