@@ -1,9 +1,12 @@
 import datetime
 import os
 from datetime import datetime
+from pathlib import Path
 
-from jsonargparse import CLI
+from jsonargparse import CLI, ArgumentParser
+from jsonargparse.typing import Path_fr
 from monai.utils import set_determinism
+from ruamel.yaml import YAML
 from torch import nn
 
 from lib.datasets.dataset_wrapper import Dataset
@@ -12,7 +15,7 @@ from modules.base_updater import BaseUpdater
 from modules.base_validator import BaseValidator
 
 
-def main(
+def setup(
     ct_data: Dataset,
     mr_data: Dataset,
     module: nn.Module,
@@ -44,6 +47,30 @@ def main(
         "step": trainer.max_iter,
     }
     trainer.checkpoint_dir += suffix.format(**info)
+    return ct_dataloader, mr_dataloader, module, trainer, updater, evaluator
+
+
+def save_config_to(dir_path):
+    Path(dir_path).mkdir(exist_ok=True, parents=True)
+    target_path = os.path.join(dir_path, "config.yml")
+
+    parser = ArgumentParser()
+    parser.add_argument("--config", type=Path_fr)
+    cfg_path = parser.parse_args().config
+
+    yaml = YAML()
+    yaml.indent(mapping=2, sequence=4, offset=2)
+    yaml.preserve_quotes = True
+    with open(cfg_path, "r") as stream:
+        cfg_data = yaml.load(stream)
+    with open(target_path, "w") as file:
+        yaml.dump(cfg_data, file)
+    return target_path
+
+
+if __name__ == "__main__":
+    ct_dataloader, mr_dataloader, module, trainer, updater, evaluator = CLI(setup, parser_mode="omegaconf")
+    train_cfg_path = save_config_to(trainer.checkpoint_dir)
     trainer.train(
         module,
         updater,
@@ -53,7 +80,4 @@ def main(
     performance = evaluator.validation(module, dataloader=(ct_dataloader[2], mr_dataloader[2]))
     print(performance)
 
-
-if __name__ == "__main__":
-    CLI(main, parser_mode="omegaconf")
     # CLI(main, parser_mode="omegaconf", formatter_class=RichHelpFormatter)
