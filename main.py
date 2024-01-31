@@ -1,5 +1,7 @@
 import datetime
+import inspect
 import os
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -31,9 +33,6 @@ def setup(
     if dev:
         os.environ["MONAI_DEBUG"] = "True"
 
-    ct_dataloader = ct_data.get_data()
-    mr_dataloader = mr_data.get_data()
-
     suffix = "{time}_{module}_{trainer}_{updater}_LR{lr}_{optimizer}_{ct_dataset}_{mr_dataset}_Step{step}"
     info = {
         "time": datetime.now().strftime("%Y%m%d_%H%M"),
@@ -47,7 +46,7 @@ def setup(
         "step": trainer.max_iter,
     }
     trainer.checkpoint_dir += suffix.format(**info)
-    return ct_dataloader, mr_dataloader, module, trainer, updater, evaluator
+    return ct_data, mr_data, module, trainer, updater, evaluator
 
 
 def save_config_to(dir_path):
@@ -65,12 +64,36 @@ def save_config_to(dir_path):
         cfg_data = yaml.load(stream)
     with open(target_path, "w") as file:
         yaml.dump(cfg_data, file)
-    return target_path
+
+
+def save_source_to(dir_path, objects):
+    dir_path = Path(dir_path) / "source"
+    dir_path.mkdir(exist_ok=True, parents=True)
+    source_files = set(Path(inspect.getsourcefile(obj.__class__)) for obj in objects)
+    for file in source_files:
+        shutil.copy(file, dir_path / file.name)
 
 
 def main():
-    ct_dataloader, mr_dataloader, module, trainer, updater, evaluator = CLI(setup, parser_mode="omegaconf")
-    train_cfg_path = save_config_to(trainer.checkpoint_dir)
+    ct_data, mr_data, module, trainer, updater, evaluator = CLI(setup, parser_mode="omegaconf")
+    save_config_to(trainer.checkpoint_dir)
+    save_source_to(
+        trainer.checkpoint_dir,
+        objects=[
+            ct_data,
+            mr_data,
+            ct_data.train_transform,
+            ct_data.test_transform,
+            mr_data.train_transform,
+            mr_data.test_transform,
+            module,
+            trainer,
+            updater,
+            evaluator,
+        ],
+    )
+    ct_dataloader = ct_data.get_data()
+    mr_dataloader = mr_data.get_data()
     trainer.train(
         module,
         updater,
