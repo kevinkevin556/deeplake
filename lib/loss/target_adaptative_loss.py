@@ -29,8 +29,7 @@ class TargetAdaptativeLoss(_Loss):
         if isinstance(background_classes, (Tensor, ndarray)):
             self.background = background_classes.tolist()
         else:
-            self.background = background_classes
-        assert isinstance(self.background, (list, tuple))
+            self.background = list(background_classes)
         self.foreground = list(set(range(1, self.num_classes)) - set(self.background))
 
         # probability mergeing matrix
