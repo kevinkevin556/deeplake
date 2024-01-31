@@ -19,8 +19,8 @@ from torch.optim import SGD, Adam, AdamW
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from .base_trainer import BaseTrainer
-from .base_updater import BaseUpdater
+from ..base_trainer import BaseTrainer
+from ..base_updater import BaseUpdater
 
 
 # Define a gradient reversal layer for domain adaptation in neural networks
