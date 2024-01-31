@@ -7,7 +7,8 @@
 import itertools
 
 import torch
-from pytorch_msssim import MS_SSIM, SSIM
+from pytorch_msssim import MS_SSIM
+from torch import nn
 from torchvision.models import VGG16_Weights, vgg16
 
 from lib.cycle_gan.image_pool import ImagePool
@@ -20,23 +21,20 @@ activation = {}
 
 def getActivation(name):
     # the hook signature
-    def hook(model, input, output):
-        activation[name] = output.detach()
+    def hook(model, input_tensor, output_tensor):
+        activation[name] = output_tensor.detach()
 
     return hook
 
 
-from torch import nn
-from torchvision.models import VGG16_Weights, vgg16
+def concat3(x):
+    return torch.cat((x, x, x), dim=1)
+
 
 vgg = vgg16(weights=VGG16_Weights.IMAGENET1K_V1).to("cuda")
 for param in vgg.parameters():
     param.requires_grad = False
 vgg_f1 = nn.Sequential(*list(vgg.children())[0][:7])
-
-
-def concat3(x):
-    return torch.cat((x, x, x), dim=1)
 
 
 class CycleGANModel(BaseModel):

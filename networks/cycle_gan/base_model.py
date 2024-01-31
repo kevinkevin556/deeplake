@@ -20,7 +20,7 @@ class BaseModel:
         self.opt = opt
         self.gpu_ids = opt.gpu_ids
         self.isTrain = opt.isTrain
-        self.device = torch.device("cuda:{}".format(self.gpu_ids[0])) if self.gpu_ids else torch.device("cpu")
+        self.device = torch.device(f"cuda:{self.gpu_ids[0]}") if self.gpu_ids else torch.device("cpu")
         self.save_dir = os.path.join(opt.checkpoints_dir, opt.name)
         if opt.resize_or_crop != "scale_width":
             torch.backends.cudnn.benchmark = True
@@ -28,9 +28,10 @@ class BaseModel:
         self.model_names = []
         self.visual_names = []
         self.image_paths = []
+        self.optimizers = []
 
-    def set_input(self, input):
-        self.input = input
+    def set_input(self, input_val):
+        self.input = input_val
 
     def forward(self):
         pass
@@ -69,7 +70,7 @@ class BaseModel:
         for scheduler in self.schedulers:
             scheduler.step()
         lr = self.optimizers[0].param_groups[0]["lr"]
-        print("learning rate = %.7f" % lr)
+        print(f"learning rate = {lr:.7f}")
 
     # return visualization images. train.py will display these images, and save the images to a html
     def get_current_visuals(self):
@@ -92,7 +93,7 @@ class BaseModel:
     def save_networks(self, which_epoch):
         for name in self.model_names:
             if isinstance(name, str):
-                save_filename = "%s_net_%s.pth" % (which_epoch, name)
+                save_filename = f"{which_epoch}_net_{name}.pth"
                 save_path = os.path.join(self.save_dir, save_filename)
                 net = getattr(self, "net" + name)
 
@@ -115,12 +116,12 @@ class BaseModel:
     def load_networks(self, which_epoch):
         for name in self.model_names:
             if isinstance(name, str):
-                load_filename = "%s_net_%s.pth" % (which_epoch, name)
+                load_filename = f"{which_epoch}_net_{name}.pth"
                 load_path = os.path.join(self.save_dir, load_filename)
                 net = getattr(self, "net" + name)
                 if isinstance(net, torch.nn.DataParallel):
                     net = net.module
-                print("loading the model from %s" % load_path)
+                print("loading the model from {load_path}")
                 # if you are using PyTorch newer than 0.4 (e.g., built from
                 # GitHub source), you can remove str() on self.device
                 state_dict = torch.load(load_path, map_location=str(self.device))
@@ -140,7 +141,7 @@ class BaseModel:
                     num_params += param.numel()
                 if verbose:
                     print(net)
-                print("[Network %s] Total number of parameters : %.3f M" % (name, num_params / 1e6))
+                print(f"[Network {name}] Total number of parameters : {num_params / 1e6:.3f} M")
         print("-----------------------------------------------")
 
     # set requies_grad=Fasle to avoid computation

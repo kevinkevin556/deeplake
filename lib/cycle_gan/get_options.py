@@ -7,7 +7,7 @@ def get_option(opt_file_path: str):
     start_marker = "------------ Options -------------"
     end_marker = "-------------- End ----------------"
 
-    with open(opt_file_path, "r") as file:
+    with open(opt_file_path, "r", encoding="utf-8") as file:
         yaml_text = file.read()
 
     start_index = yaml_text.find(start_marker)

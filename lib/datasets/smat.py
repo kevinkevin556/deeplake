@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import numpy as np
-from medaset.lake import SmatCtDataset, SmatMrDataset
+from medaset import lake
 
 from .dataset_wrapper import Dataset
 
 
-class _SmatCtDatasetWithBackgroundInfo(SmatCtDataset):
+class _SmatCtDatasetWithBackgroundInfo(lake.SmatCtDataset):
     def __init__(
         self,
         *args,
@@ -31,7 +31,7 @@ class _SmatCtDatasetWithBackgroundInfo(SmatCtDataset):
         return output
 
 
-class _SmatMrDatasetWithBackgroundInfo(SmatMrDataset):
+class _SmatMrDatasetWithBackgroundInfo(lake.SmatMrDataset):
     def __init__(
         self,
         *args,

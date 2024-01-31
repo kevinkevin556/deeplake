@@ -68,7 +68,7 @@ def save_config_to(dir_path):
     return target_path
 
 
-if __name__ == "__main__":
+def main():
     ct_dataloader, mr_dataloader, module, trainer, updater, evaluator = CLI(setup, parser_mode="omegaconf")
     train_cfg_path = save_config_to(trainer.checkpoint_dir)
     trainer.train(
@@ -80,4 +80,7 @@ if __name__ == "__main__":
     performance = evaluator.validation(module, dataloader=(ct_dataloader[2], mr_dataloader[2]))
     print(performance)
 
+
+if __name__ == "__main__":
+    main()
     # CLI(main, parser_mode="omegaconf", formatter_class=RichHelpFormatter)

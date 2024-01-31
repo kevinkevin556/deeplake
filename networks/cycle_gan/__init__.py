@@ -4,28 +4,32 @@
 #
 # and has been partially revised for this research.
 
+from .cycle_gan_model import CycleGANModel
+from .cycle_gan_model_with_classification_frozen import (
+    CycleGANModelWithClassificationFrozen,
+)
+from .cycle_gan_semantic_model import CycleGANSemanticModel
+from .pix2pix_model import Pix2PixModel
+from .test_model import TestModel
+
+
 def create_model(opt):
     model = None
-    if opt.model == 'cycle_gan':
-        #assert(opt.dataset_mode == 'unaligned')
-        from .cycle_gan_model import CycleGANModel
+    if opt.model == "cycle_gan":
         model = CycleGANModel()
-    elif opt.model == 'pix2pix':
-        assert(opt.dataset_mode == 'aligned')
-        from .pix2pix_model import Pix2PixModel
+    elif opt.model == "pix2pix":
+        assert opt.dataset_mode == "aligned"
         model = Pix2PixModel()
-    elif opt.model == 'test':
-        assert(opt.dataset_mode == 'single')
-        from .test_model import TestModel
+    elif opt.model == "test":
+        assert opt.dataset_mode == "single"
         model = TestModel()
-    elif opt.model == 'cycle_gan_with_classification_frozen':
-        from .cycle_gan_model_with_classification_frozen import CycleGANModelWithClassificationFrozen
+    elif opt.model == "cycle_gan_with_classification_frozen":
         model = CycleGANModelWithClassificationFrozen()
-    elif opt.model == 'cycle_gan_semantic':
-        from .cycle_gan_semantic_model import CycleGANSemanticModel
+    elif opt.model == "cycle_gan_semantic":
         model = CycleGANSemanticModel()
     else:
-        raise NotImplementedError('model [%s] not implemented.' % opt.model)
+        raise NotImplementedError(f"model [{opt.model}] not implemented.")
+
     model.initialize(opt)
-    print("model [%s] was created" % (model.name()))
+    print(f"model [{model.name()}] was created")
     return model
