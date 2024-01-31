@@ -19,8 +19,8 @@ from torch.optim import SGD, Adam, AdamW
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from ..base_trainer import BaseTrainer
-from ..base_updater import BaseUpdater
+from modules.base_trainer import BaseTrainer, TrainLogger
+from modules.base_updater import BaseUpdater
 
 
 # Define a gradient reversal layer for domain adaptation in neural networks
@@ -271,7 +271,7 @@ class DANNTrainer(BaseTrainer):
 
         # Initalize progress bar and tensorboard writer
         train_pbar = tqdm(range(self.max_iter), dynamic_ncols=True)
-        writer = SummaryWriter(log_dir=self.checkpoint_dir)
+        logger = TrainLogger(self.checkpoint_dir)
 
         # Initial stage. Note: updater(module) checks the module and returns a partial func of updating parameters.
         best_metric = 0
@@ -302,17 +302,20 @@ class DANNTrainer(BaseTrainer):
                 "adv_loss": adv_loss,
             }
             train_pbar.set_description(self.pbar_description.format(**info))
-            writer.add_scalar("train/seg_loss", seg_loss, step)
-            writer.add_scalar("train/adv_loss", adv_loss, step)
+            logger.log_train("seg_loss", seg_loss, step)
+            logger.log_train("adv_loss", adv_loss, step)
 
             # Perform validation at specified intervals and save model if performance improves
             if ((step + 1) % self.eval_step == 0) or (step == self.max_iter - 1):
                 val_metrics = self.validator(module, (ct_dataloader[1], mr_dataloader[1]), global_step=step)
 
                 # Update summary writer
-                writer.add_scalar(f"val/{self.metric.__class__.__name__}:Average", val_metrics["mean"], step)
-                writer.add_scalar(f"val/{self.metric.__class__.__name__}:CT", val_metrics["ct"], step)
-                writer.add_scalar(f"val/{self.metric.__class__.__name__}:MR", val_metrics["mr"], step)
+                logger.log_val(
+                    self.metric,
+                    suffix=["Average", "CT", "MR"],
+                    value=(val_metrics["mean"], val_metrics["ct"], val_metrics["mr"]),
+                    step=step,
+                )
 
                 # Select validation metric
                 if min(val_metrics["ct"], val_metrics["mr"]) is not np.nan:
@@ -323,9 +326,13 @@ class DANNTrainer(BaseTrainer):
                 # Update best metric
                 if val_metric > best_metric:
                     module.save(self.checkpoint_dir)
-                    msg = green(f"Model saved! Validation: (New) {val_metric:2.7f} > (Old) {best_metric:2.7f}")
+                    logger.success(
+                        f"Model saved! Validation: (New) {val_metric:2.7f} > (Old) {best_metric:2.7f} "
+                        f"(CT) {val_metrics['ct']:2.7f} (MR) {val_metrics['mr']:2.7f}"
+                    )
                     best_metric = val_metric
                 else:
-                    msg = red(f"No improvement. Validation: (New) {val_metric:2.7f} <= (Old) {best_metric:2.7f}")
-                msg += f" (CT) {val_metrics['ct']:2.7f} (MR) {val_metrics['mr']:2.7f}"
-                tqdm.write(str(msg))
+                    logger.info(
+                        f"No improvement. Validation: (New) {val_metric:2.7f} <= (Old) {best_metric:2.7f} "
+                        f"(CT) {val_metrics['ct']:2.7f} (MR) {val_metrics['mr']:2.7f}"
+                    )
