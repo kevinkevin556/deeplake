@@ -49,6 +49,7 @@ class Dataset(ABC):
         train_batch_size: int = 1,
         return_dataloader: bool = True,
         dev: bool = False,
+        random_seed: int = 42,
     ):
         self.in_use = in_use
         self.root_dir = root_dir
@@ -63,6 +64,7 @@ class Dataset(ABC):
         self.train_batch_size = train_batch_size
         self.return_dataloader = return_dataloader
         self.dev = dev
+        self.random_seed = random_seed
 
         if not (0 <= holdout_ratio <= 1):
             raise ValueError(f"The value of holdout_ratio is expected to be between 0 and 1, get {holdout_ratio}.")
