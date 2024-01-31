@@ -1,0 +1,95 @@
+device: cuda
+dev: False
+deterministic: False
+
+ct_data:
+    class_path: lib.datasets.smat.SmatCtDataset
+    init_args:
+        in_use: True
+        root_dir: C:/Users/User/Desktop/TSM_Project/data/smat/CT
+        num_classes: 4
+        train_background_classes: [0, 1, 2]
+        test_background_classes: [0]
+        train_transform: lib.datasets.smat_default_transform.ct_transform
+        test_transform: lib.datasets.smat_default_transform.ct_transform
+        holdout_ratio: 0.1  
+        cache_rate: 1
+        num_workers: 2
+        train_batch_size: 1
+        return_dataloader: True
+        dev: ${dev}
+
+mr_data:
+    class_path: lib.datasets.smat.SmatMrDataset
+    init_args:
+        in_use: True
+        sequence: pdff
+        root_dir: C:/Users/User/Desktop/TSM_Project/data/smat/MR
+        num_classes: 4
+        train_background_classes: [0, 3]
+        test_background_classes: [0]
+        train_transform: lib.datasets.smat_default_transform.mr_transform
+        test_transform: lib.datasets.smat_default_transform.mr_transform
+        holdout_ratio: 0.1  
+        cache_rate: 1
+        num_workers: 2
+        train_batch_size: 1
+        return_dataloader: True
+        dev: ${dev}
+
+module:
+    class_path: modules.dann.cyclegan.CycleGanDANNModule
+    init_args:
+        cycle_gan_ckpt_dir: C:/Users/User/Desktop/Kevin/pytorch-CycleGAN-and-pix2pix/checkpoints/ct_pdff_ssim/
+        ct_criterion: 
+            class_path: lib.loss.target_adaptative_loss.TargetAdaptativeLoss
+            init_args:
+                num_classes: ${ct_data.init_args.num_classes}
+                background_classes: ${ct_data.init_args.train_background_classes}
+        mr_criterion: 
+            class_path: lib.loss.target_adaptative_loss.TargetAdaptativeLoss
+            init_args:
+                num_classes: ${mr_data.init_args.num_classes}
+                background_classes: ${mr_data.init_args.train_background_classes}
+        optimizer: AdamW
+        lr: 0.0001
+        roi_size: [512, 512]
+        sw_batch_size: 1
+        pretrained: null
+        device: ${device}
+
+updater:
+    class_path: modules.dann.cyclegan.CycleGanDANNUpdater
+
+trainer:
+    class_path: modules.dann.dann.DANNTrainer
+    init_args:
+        max_iter: 2000
+        eval_step: 100
+        metric:
+            class_path: monai.metrics.DiceMetric
+            init_args:
+                include_background: True
+                reduction: mean
+                get_not_nans: False
+        checkpoint_dir: ./checkpoints/
+        device: ${device}
+        dev: ${dev}
+
+evaluator:
+    class_path: modules.base_validator.BaseValidator
+    init_args:
+        metric:
+            class_path: monai.metrics.DiceMetric
+            init_args:
+                include_background: True
+                reduction: mean
+                get_not_nans: False
+        device: ${device}
+    
+
+
+
+    
+
+
