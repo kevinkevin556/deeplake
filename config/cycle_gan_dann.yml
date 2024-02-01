@@ -1,5 +1,5 @@
 device: cuda
-dev: False
+dev: True
 deterministic: False
 
 ct_data:
@@ -64,7 +64,7 @@ updater:
 trainer:
     class_path: modules.dann.dann.DANNTrainer
     init_args:
-        max_iter: 2000
+        max_iter: 4000
         eval_step: 100
         metric:
             class_path: monai.metrics.DiceMetric
