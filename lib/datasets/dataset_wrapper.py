@@ -37,10 +37,10 @@ class Dataset(ABC):
     def __init__(
         self,
         in_use: bool,
-        root_dir: Path_drw,
-        num_classes: int,
-        train_background_classes: list,
-        test_background_classes: list,
+        root_dir: Path_drw = "./",
+        num_classes: int = 2,
+        train_background_classes: list = [0],
+        test_background_classes: list = [0],
         train_transform: Callable | None = None,
         test_transform: Callable | None = None,
         holdout_ratio: float = 0.1,
@@ -52,26 +52,28 @@ class Dataset(ABC):
         random_seed: int = 42,
     ):
         self.in_use = in_use
-        self.root_dir = root_dir
-        self.num_classes = num_classes
-        self.train_background_classes = train_background_classes
-        self.test_background_classes = test_background_classes
-        self.train_transform = train_transform
-        self.test_transform = test_transform
-        self.holdout_ratio = holdout_ratio
-        self.cache_rate = cache_rate
-        self.num_workers = num_workers
-        self.train_batch_size = train_batch_size
-        self.return_dataloader = return_dataloader
-        self.dev = dev
-        self.random_seed = random_seed
 
-        if not (0 <= holdout_ratio <= 1):
-            raise ValueError(f"The value of holdout_ratio is expected to be between 0 and 1, get {holdout_ratio}.")
-        if 0 not in train_background_classes:
-            raise ValueError("Original background class (0) is not included in train_background_classes")
-        if 0 not in test_background_classes:
-            raise ValueError("Original background class (0) is not included in test_background_classes")
+        if self.in_use:
+            self.root_dir = root_dir
+            self.num_classes = num_classes
+            self.train_background_classes = train_background_classes
+            self.test_background_classes = test_background_classes
+            self.train_transform = train_transform
+            self.test_transform = test_transform
+            self.holdout_ratio = holdout_ratio
+            self.cache_rate = cache_rate
+            self.num_workers = num_workers
+            self.train_batch_size = train_batch_size
+            self.return_dataloader = return_dataloader
+            self.dev = dev
+            self.random_seed = random_seed
+
+            if not (0 <= holdout_ratio <= 1):
+                raise ValueError(f"The value of holdout_ratio is expected to be between 0 and 1, get {holdout_ratio}.")
+            if 0 not in train_background_classes:
+                raise ValueError("Original background class (0) is not included in train_background_classes")
+            if 0 not in test_background_classes:
+                raise ValueError("Original background class (0) is not included in test_background_classes")
 
         self.train_dataset = MonaiDataset({"image": [], "label": []})
         self.val_dataset = MonaiDataset({"image": [], "label": []})

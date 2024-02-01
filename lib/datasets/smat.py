@@ -59,10 +59,10 @@ class _SmatMrDatasetWithBackgroundInfo(lake.SmatMrDataset):
 class SmatCtDataset(Dataset):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        if self.num_classes != 4:
-            raise ValueError(f"There are 4 classes in SMAT dataset. Got {self.num_classes}")
-
         if self.in_use:
+            if self.num_classes != 4:
+                raise ValueError(f"There are 4 classes in SMAT dataset. Got {self.num_classes}")
+
             self.train_dataset = _SmatCtDatasetWithBackgroundInfo(
                 root_dir=self.root_dir,
                 target="all",
@@ -123,12 +123,14 @@ class SmatCtDataset(Dataset):
 
 
 class SmatMrDataset(Dataset):
-    def __init__(self, *args, sequence: str, **kwargs):
+    def __init__(self, *args, sequence: str | None = None, **kwargs):
         super().__init__(*args, **kwargs)
-        if self.num_classes != 4:
-            raise ValueError(f"There are 4 classes in SMAT dataset. Got {self.num_classes}")
-
         if self.in_use:
+            if sequence is None:
+                raise ValueError("The sequence should be specified when the dataset is to be loaded.")
+            if self.num_classes != 4:
+                raise ValueError(f"There are 4 classes in SMAT dataset. Got {self.num_classes}")
+
             self.train_dataset = _SmatMrDatasetWithBackgroundInfo(
                 root_dir=self.root_dir,
                 sequence=sequence,

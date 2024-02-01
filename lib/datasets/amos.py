@@ -34,10 +34,10 @@ class _AmosDatasetWithBackgroundInfo(amos.AmosDataset):
 class AmosCtDataset(Dataset):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        if self.num_classes != 16:
-            raise ValueError(f"There are 16 classes in AMOS dataset. Got {self.num_classes}")
-
         if self.in_use:
+            if self.num_classes != 16:
+                raise ValueError(f"There are 16 classes in AMOS dataset. Got {self.num_classes}")
+
             self.train_dataset = _AmosDatasetWithBackgroundInfo(
                 root_dir=self.root_dir,
                 modality="ct",
@@ -81,12 +81,12 @@ class AmosCtDataset(Dataset):
 class AmosMrDataset(Dataset):
     def __init__(self, *args, sequence: str | None = None, **kwargs):
         super().__init__(*args, **kwargs)
-        if sequence is not None:
-            raise ValueError(f"No sequence to determine in AMOS dataset. Got {sequence}")
-        if self.num_classes != 16:
-            raise ValueError(f"There are 16 classes in AMOS dataset. Got {self.num_classes}")
-
         if self.in_use:
+            if sequence is not None:
+                raise ValueError(f"No sequence to determine in AMOS dataset. Got {sequence}")
+            if self.num_classes != 16:
+                raise ValueError(f"There are 16 classes in AMOS dataset. Got {self.num_classes}")
+
             self.train_dataset = _AmosDatasetWithBackgroundInfo(
                 root_dir=self.root_dir,
                 modality="mr",
