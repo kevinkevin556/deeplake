@@ -7,7 +7,6 @@ from typing import Literal
 
 import numpy as np
 import torch
-from colorful import green, red
 from monai.data import DataLoader
 from monai.inferers import sliding_window_inference
 from monai.losses import DiceCELoss
@@ -16,7 +15,6 @@ from torch import nn, ones, zeros
 from torch.nn import BCEWithLogitsLoss
 from torch.nn.modules.loss import _Loss
 from torch.optim import SGD, Adam, AdamW
-from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from modules.base_trainer import BaseTrainer, TrainLogger
