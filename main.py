@@ -69,29 +69,20 @@ def save_config_to(dir_path):
 def save_source_to(dir_path, objects):
     dir_path = Path(dir_path) / "source"
     dir_path.mkdir(exist_ok=True, parents=True)
-    source_files = set(Path(inspect.getsourcefile(obj.__class__)) for obj in objects)
+    source_files = set(Path(inspect.getsourcefile(obj.__class__)) for obj in objects if obj is not None)
     for file in source_files:
         shutil.copy(file, dir_path / file.name)
 
 
 def main():
     ct_data, mr_data, module, trainer, updater, evaluator = CLI(setup, parser_mode="omegaconf")
+    components = [module, trainer, updater, evaluator]
+    if ct_data.in_use:
+        components += [ct_data, ct_data.train_transform, ct_data.test_transform]
+    if mr_data.in_use:
+        components = [mr_data, mr_data.train_transform, mr_data.test_transform]
     save_config_to(trainer.checkpoint_dir)
-    save_source_to(
-        trainer.checkpoint_dir,
-        objects=[
-            ct_data,
-            mr_data,
-            ct_data.train_transform,
-            ct_data.test_transform,
-            mr_data.train_transform,
-            mr_data.test_transform,
-            module,
-            trainer,
-            updater,
-            evaluator,
-        ],
-    )
+    save_source_to(trainer.checkpoint_dir, objects=components)
     ct_dataloader = ct_data.get_data()
     mr_dataloader = mr_data.get_data()
     trainer.train(
