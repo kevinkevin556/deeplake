@@ -46,6 +46,7 @@ model = LitClassifier()
 train, val, test = mnist()
 
 # train
+
 trainer = Trainer()
 trainer.fit(model, train, val)
 
