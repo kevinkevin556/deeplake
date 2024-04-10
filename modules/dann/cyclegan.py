@@ -5,15 +5,15 @@ from typing import Literal
 
 import numpy as np
 import torch
-from monai.losses import DiceCELoss
-from torch import nn
-from torch.nn.modules.loss import _Loss
-
 from lib.cycle_gan.get_options import get_option
 from lib.loss.target_adaptative_loss import TargetAdaptativeLoss
-from modules.dann.dann import DANNModule, DANNUpdater
+from modules.dann.module import DANNModule
+from modules.dann.part_updater import PartUpdaterDANN
+from monai.losses import DiceCELoss
 from networks.cycle_gan.cycle_gan_model import CycleGANModel
 from networks.unet import BasicUNetDecoder, BasicUNetEncoder
+from torch import nn
+from torch.nn.modules.loss import _Loss
 
 default_dom_classifier = nn.Sequential(
     nn.Conv2d(256, 32, kernel_size=3, padding=1),
@@ -70,7 +70,7 @@ class CycleGanDANNModule(DANNModule):
         self.dice2 = DiceCELoss(softmax=True, to_onehot_y=True)
 
 
-class CycleGanDANNUpdater(DANNUpdater):
+class PartUpdaterCycleGanDANN(PartUpdaterDANN):
     def __init__(self):
         super().__init__()
         self.sampling_mode = "sequential"
@@ -87,8 +87,14 @@ class CycleGanDANNUpdater(DANNUpdater):
         assert getattr(module, "cycle_gan", False), "The specified module should incoporate component/method: cycle_gan"
 
     def update(self, module, images, masks, modalities, alpha):
-        module.grl.set_alpha(alpha)
 
+        #####
+        # TODO -
+        #   The code should be cleaned and clarified with commensts.
+        #   There are some obsolute and redundant variables in this function.
+        #####
+
+        module.grl.set_alpha(alpha)
         masks = list(masks)
         module.optimizer.zero_grad()
 
