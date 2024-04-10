@@ -15,8 +15,8 @@ from torch.nn.modules.loss import _Loss
 from torch.optim import SGD, Adam, AdamW
 from torch.utils.data import DataLoader as PyTorchDataLoader
 
-from .base_trainer import BaseTrainer
-from .base_updater import BaseUpdater
+from modules.base.trainer import BaseTrainer
+from modules.base.updater import BaseUpdater
 
 DataLoader = Union[MonaiDataLoader, PyTorchDataLoader]
 
@@ -151,7 +151,7 @@ class SegmentationUpdater(BaseUpdater):
         for component in ("criterion", "optimizer"):
             assert getattr(
                 module, component, False
-            ), "The specified module should incoporate component/method: {component}"
+            ), f"The specified module should incoporate component/method: {component}"
 
     def update(self, module, images, masks, modalities=None):
         module.optimizer.zero_grad()
@@ -214,8 +214,8 @@ class SegmentationTrainer(BaseTrainer):
         *,
         train_dataloader: DataLoader | None = None,
         val_dataloader: DataLoader | None = None,
-        ct_dataloader: tuple(DataLoader, DataLoader) | None = None,
-        mr_dataloader: tuple(DataLoader, DataLoader) | None = None,
+        ct_dataloader: tuple[DataLoader, DataLoader] | None = None,
+        mr_dataloader: tuple[DataLoader, DataLoader] | None = None,
     ):
         valid_ct_data = ct_dataloader[0] and ct_dataloader[1]
         valid_mr_data = mr_dataloader[0] and mr_dataloader[1]
