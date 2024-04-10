@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Literal, Union
 
 import numpy as np
+import torch
 import tqdm
 from loguru import logger
 from monai.data import DataLoader as MonaiDataLoader
@@ -14,8 +15,8 @@ from torch.utils.data import DataLoader as PyTorchDataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
-from modules.base_updater import BaseUpdater
-from modules.base_validator import BaseValidator
+from modules.base.updater import BaseUpdater
+from modules.base.validator import BaseValidator
 
 DataLoader = Union[MonaiDataLoader, PyTorchDataLoader]
 
@@ -159,7 +160,12 @@ class BaseTrainer:
             loss = module_update(images, masks, modality)
 
             # Update progress bar and summary writer
-            info = {"step": step + 1, "max_iter": self.max_iter, "modality_label": modality_label, "loss": loss}
+            info = {
+                "step": step + 1,
+                "max_iter": self.max_iter,
+                "modality_label": modality_label,
+                "loss": torch.Tensor(loss),
+            }
             train_pbar.set_description(self.pbar_description.format(**info))
             logger.log_train(module.criterion, loss, step)
 
