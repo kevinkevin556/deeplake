@@ -8,6 +8,9 @@ checkpoints/
 *.ckpt
 debug/
 
+# Training configs
+config/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
