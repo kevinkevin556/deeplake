@@ -9,6 +9,7 @@ from monai.metrics import DiceMetric, Metric
 from tqdm import tqdm
 
 from modules.base.trainer import BaseTrainer, TrainLogger
+from modules.base.validator import BaseValidator
 
 
 def get_batch(ct_dataloader, mr_dataloader, mode):
@@ -37,8 +38,9 @@ class PartTrainerDANN(BaseTrainer):
         checkpoint_dir: str = "./checkpoints/",
         device: Literal["cuda", "cpu"] = "cuda",
         dev: bool = False,
+        validator: BaseValidator | None = None,
     ):
-        super().__init__(max_iter, eval_step, metric, checkpoint_dir, device, dev)
+        super().__init__(max_iter, eval_step, metric, checkpoint_dir, device, dev, validator)
         self.pbar_description = (
             "Training ({step} / {max_iter} Steps) ({modality1},{modality2})"
             "(grl_lambda={grl_lambda:2.3f})"

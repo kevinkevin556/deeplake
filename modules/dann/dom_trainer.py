@@ -9,7 +9,7 @@ from monai.metrics import DiceMetric, Metric
 from tqdm import tqdm
 
 from modules.base.trainer import BaseTrainer, TrainLogger
-from modules.validator.da import DomValidator
+from modules.validator.dom_adapt import DomValidator
 
 
 def get_batch(ct_dataloader, mr_dataloader, mode):
