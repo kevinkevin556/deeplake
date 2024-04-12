@@ -70,7 +70,7 @@ class DomValidator(BaseValidator):
                 num_classes = int(batch["num_classes"])
                 background_classes = batch["background_classes"].numpy().flatten()
 
-                assert modality_label in set(["ct", "mr"]), f"Unknown/Invalid modality {modality_label}"
+                assert modality_label in {"ct", "mr"}, f"Unknown/Invalid modality {modality_label}"
                 assert 0 in background_classes, "0 should be included in background_classes"
 
                 infer_out = module.inference(images)

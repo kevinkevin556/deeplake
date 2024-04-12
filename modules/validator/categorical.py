@@ -5,12 +5,11 @@ from collections.abc import Sequence
 from typing import Literal
 
 import numpy as np
+import pandas as pd
 import torch
 import tqdm
-from medaset.transforms import BackgroundifyClasses
 from monai.data import DataLoader, decollate_batch
 from monai.metrics import Metric
-from monai.transforms import AsDiscrete, Compose
 from torch import nn
 from tqdm.auto import tqdm
 
@@ -68,10 +67,14 @@ class CategoricalValidator(BaseValidator):
                     masks = [m[None, [c], :] for m in masks]
 
                     # Compute validation metrics
-                    self.metric(y_pred=outputs, y=masks)
-                    batch_metric = self.metric.aggregate().item()
-                    val_metrics[modality_label] += [batch_metric]
-                    self.metric.reset()
+                    if (not self.is_train) or (c not in set(background_classes) - {0}):
+                        self.metric(y_pred=outputs, y=masks)
+                        batch_metric = self.metric.aggregate().item()
+                        val_metrics[modality_label] += [batch_metric]
+                        self.metric.reset()
+                    else:
+                        batch_metric = np.nan
+                        val_metrics[modality_label] += [batch_metric]
 
                     # Update progressbar
                     info = {
@@ -88,3 +91,31 @@ class CategoricalValidator(BaseValidator):
             metric_means[c]["mr"] = np.mean(val_metrics["mr"]) if len(val_metrics["mr"]) > 0 else np.nan
 
         return metric_means
+
+
+class CategoricalMinValidator(CategoricalValidator):
+    def __init__(
+        self,
+        metric: Metric,
+        num_classes: int,
+        is_train: bool = False,
+        device: Literal["cuda", "cpu"] = "cuda",
+    ):
+        super().__init__(metric, num_classes, is_train, device)
+
+    def validation(
+        self,
+        module: nn.Module,
+        dataloader: DataLoader | Sequence[DataLoader],
+        global_step: int | None = None,
+    ) -> dict:
+        metric_means = super().validation(module, dataloader, global_step)
+        tqdm.write(repr(pd.DataFrame.from_dict(metric_means, orient="index")))
+
+        output = {}
+        for modality in ["mean", "ct", "mr"]:
+            modality_metrics = [
+                metric_means[c][modality] for c in metric_means.keys() if not np.isnan(metric_means[c][modality])
+            ]
+            output[modality] = min(modality_metrics) if modality_metrics else np.nan
+        return output
