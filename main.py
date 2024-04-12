@@ -7,14 +7,16 @@ from pathlib import Path
 
 from jsonargparse import CLI, ArgumentParser
 from jsonargparse.typing import Path_fr
+from monai.metrics import DiceMetric
 from monai.utils import set_determinism
 from ruamel.yaml import YAML
 from torch import nn
 
 from lib.datasets.dataset_wrapper import Dataset
-from modules.base_trainer import BaseTrainer
-from modules.base_updater import BaseUpdater
-from modules.base_validator import BaseValidator
+from modules.base.trainer import BaseTrainer
+from modules.base.updater import BaseUpdater
+from modules.base.validator import BaseValidator
+from modules.validator.summary import SummmaryValidator
 
 
 def setup(
@@ -23,7 +25,7 @@ def setup(
     module: nn.Module,
     updater: BaseUpdater,
     trainer: BaseTrainer,
-    evaluator: BaseValidator,
+    evaluator: BaseValidator = None,
     device: str = "cuda",
     dev: bool = False,
     deterministic: bool = False,
@@ -46,6 +48,12 @@ def setup(
         "step": trainer.max_iter,
     }
     trainer.checkpoint_dir += suffix.format(**info)
+
+    if evaluator is None:
+        evaluator = SummmaryValidator(
+            metric=DiceMetric(include_background=True, reduction="mean", get_not_nans=False),
+            num_classes=ct_data.num_classes,
+        )
     return ct_data, mr_data, module, trainer, updater, evaluator
 
 
@@ -81,7 +89,7 @@ def main():
         components += [ct_data, ct_data.train_transform, ct_data.test_transform]
     if mr_data.in_use:
         components = [mr_data, mr_data.train_transform, mr_data.test_transform]
-    save_config_to(trainer.checkpoint_dir)
+    # save_config_to(trainer.checkpoint_dir)
     save_source_to(trainer.checkpoint_dir, objects=components)
     ct_dataloader = ct_data.get_data()
     mr_dataloader = mr_data.get_data()
