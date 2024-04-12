@@ -5,15 +5,16 @@ from typing import Literal
 
 import numpy as np
 import torch
+from monai.losses import DiceCELoss
+from torch import nn
+from torch.nn.modules.loss import _Loss
+
 from lib.cycle_gan.get_options import get_option
 from lib.loss.target_adaptative_loss import TargetAdaptativeLoss
 from modules.dann.module import DANNModule
 from modules.dann.part_updater import PartUpdaterDANN
-from monai.losses import DiceCELoss
-from networks.cycle_gan.cycle_gan_model import CycleGANModel
+from networks.cyclegan.cycle_gan_model import CycleGANModel
 from networks.unet import BasicUNetDecoder, BasicUNetEncoder
-from torch import nn
-from torch.nn.modules.loss import _Loss
 
 default_dom_classifier = nn.Sequential(
     nn.Conv2d(256, 32, kernel_size=3, padding=1),
@@ -122,14 +123,20 @@ class PartUpdaterCycleGanDANN(PartUpdaterDANN):
                 pseudo_softmax = module.predictor(module.feat_extractor(fake_images[i]))
                 masks[i] += torch.argmax(pseudo_softmax, dim=1, keepdim=True) * (masks[i] == 0)
                 pseudo_label = torch.argmax(pseudo_softmax, dim=1, keepdim=True)
-                pseudo_foreground = set(torch.unique(pseudo_label).cpu().numpy()) - {0}
+                # pseudo_foreground = set(torch.unique(pseudo_label).cpu().numpy()) - {0}
                 _seg_losses[i] += module.dice2(_output[i], masks[i])
             else:
                 _seg_losses[i] = module.mr_criterion(_output[i], masks[i])
+                fake_images[i].require_grad = False
+                pseudo_softmax = module.predictor(module.feat_extractor(fake_images[i]))
+                masks[i] += torch.argmax(pseudo_softmax, dim=1, keepdim=True) * (masks[i] == 0)
+                pseudo_label = torch.argmax(pseudo_softmax, dim=1, keepdim=True)
+                # pseudo_foreground = set(torch.unique(pseudo_label).cpu().numpy()) - {0}
+                _seg_losses[i] += module.dice2(_output[i], masks[i])
             _seg_losses[i].backward(retain_graph=True)
 
         seg_loss = _seg_losses[0] + _seg_losses[1]
-        seg_loss.backward(retain_graph=True)
+        # seg_loss.backward(retain_graph=True)
 
         # Domain Classifier branch: predict domain equivalent
         for i in [0, 1]:
