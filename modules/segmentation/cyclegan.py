@@ -8,7 +8,7 @@ from torch.nn.modules.loss import _Loss
 
 from lib.cycle_gan.get_options import get_option
 from lib.loss.target_adaptative_loss import TargetAdaptativeLoss
-from networks.cycle_gan.cycle_gan_model import CycleGANModel
+from networks.cyclegan.cycle_gan_model import CycleGANModel
 from networks.unet import BasicUNet
 
 from .segmentation import SegmentationModule, SegmentationUpdater
