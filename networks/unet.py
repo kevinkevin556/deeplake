@@ -177,7 +177,7 @@ class BasicUNetNoSkipDecoder(nn.Module):
         self.final_conv = Conv["conv", spatial_dims](fea[5], out_channels, kernel_size=1)
 
     def forward(self, x: torch.Tensor):
-        skips, enc_hidden = x
+        _, enc_hidden = x
         x4 = enc_hidden
         u4 = self.upcat_4(x4, None)
         u3 = self.upcat_3(u4, None)

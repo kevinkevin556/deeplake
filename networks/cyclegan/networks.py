@@ -462,7 +462,7 @@ class Classifier(nn.Module):
         self.after_linear = nn.Sequential(*sequence)
 
     def forward(self, x):
-        bs = x.size(0)
+        # bs = x.size(0)
         # out = self.after_linear(self.before_linear(x).view(bs, -1))
         return self.before_linear(x)
 

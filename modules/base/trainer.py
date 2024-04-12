@@ -118,7 +118,7 @@ class BaseTrainer:
         return getattr(self, "alias", self.__class__.__name__)
 
     # auxilary function to show training info before training procedure starts
-    def show_training_info(self, module, train_dataloader, val_dataloader):
+    def show_training_info(self, module, *, train_dataloader, val_dataloader):
         print("--------")
         print("Device:", self.device)  # device is a global variable (not an argument of cli)
         print("# of Training Samples:", len(train_dataloader))
@@ -137,7 +137,7 @@ class BaseTrainer:
         train_dataloader: DataLoader | None = None,
         val_dataloader: DataLoader | None = None,
     ):
-        self.show_training_info(module, train_dataloader, val_dataloader)
+        self.show_training_info(module, train_dataloader=train_dataloader, val_dataloader=val_dataloader)
 
         # Initalize progress bar and tensorboard writer
         train_pbar = tqdm(range(self.max_iter), dynamic_ncols=True)

@@ -9,7 +9,7 @@ def get_entropy_map(v, eps=0, keepdim=True, logits=True):
     input: batch_size x channels x h x w
     output: batch_size x 1 x h x w
     """
-    n, c, h, w = v.size()
+    _, c, _, _ = v.size()
     if logits:
         p = torch.softmax(v, dim=1)
         log_p = torch.log_softmax(v, dim=1) / np.log(2)

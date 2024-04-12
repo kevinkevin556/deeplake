@@ -48,7 +48,7 @@ class DomTrainerDANN(BaseTrainer):
         self.validator = DomValidator(metric, is_train=True, device=device)
 
     # Function to display training information
-    def show_training_info(self, module, ct_dataloader, mr_dataloader):
+    def show_training_info(self, module, *, ct_dataloader, mr_dataloader):
         print("--------")
         print("- Device:", self.device)
         print("- # of Training Samples:", {"ct": len(ct_dataloader[0]), "mr": len(mr_dataloader[0])})
@@ -69,7 +69,7 @@ class DomTrainerDANN(BaseTrainer):
         mr_dataloader: tuple[DataLoader, DataLoader] | None = None,
     ):
         # Display training information and initialize metrics
-        self.show_training_info(module, ct_dataloader, mr_dataloader)
+        self.show_training_info(module, ct_dataloader=ct_dataloader, mr_dataloader=mr_dataloader)
 
         # Initalize progress bar, logger and the best result
         train_pbar = tqdm(range(self.max_iter), dynamic_ncols=True)

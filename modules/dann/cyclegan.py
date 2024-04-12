@@ -109,8 +109,8 @@ class PartUpdaterCycleGanDANN(PartUpdaterDANN):
         module.cycle_gan.forward()
 
         fake_images = [module.cycle_gan.fake_B, module.cycle_gan.fake_A]
-        foreground = {"ct": set(module.ct_criterion.foreground), "mr": set(module.mr_criterion.foreground)}
-        num_classes = module.ct_criterion.num_classes
+        # foreground = {"ct": set(module.ct_criterion.foreground), "mr": set(module.mr_criterion.foreground)}
+        # num_classes = module.ct_criterion.num_classes
 
         for i in [0, 1]:
             m = modalities[i][0]
@@ -122,7 +122,7 @@ class PartUpdaterCycleGanDANN(PartUpdaterDANN):
                 fake_images[i].require_grad = False
                 pseudo_softmax = module.predictor(module.feat_extractor(fake_images[i]))
                 masks[i] += torch.argmax(pseudo_softmax, dim=1, keepdim=True) * (masks[i] == 0)
-                pseudo_label = torch.argmax(pseudo_softmax, dim=1, keepdim=True)
+                # pseudo_label = torch.argmax(pseudo_softmax, dim=1, keepdim=True)
                 # pseudo_foreground = set(torch.unique(pseudo_label).cpu().numpy()) - {0}
                 _seg_losses[i] += module.dice2(_output[i], masks[i])
             else:
@@ -130,7 +130,7 @@ class PartUpdaterCycleGanDANN(PartUpdaterDANN):
                 fake_images[i].require_grad = False
                 pseudo_softmax = module.predictor(module.feat_extractor(fake_images[i]))
                 masks[i] += torch.argmax(pseudo_softmax, dim=1, keepdim=True) * (masks[i] == 0)
-                pseudo_label = torch.argmax(pseudo_softmax, dim=1, keepdim=True)
+                # pseudo_label = torch.argmax(pseudo_softmax, dim=1, keepdim=True)
                 # pseudo_foreground = set(torch.unique(pseudo_label).cpu().numpy()) - {0}
                 _seg_losses[i] += module.dice2(_output[i], masks[i])
             _seg_losses[i].backward(retain_graph=True)

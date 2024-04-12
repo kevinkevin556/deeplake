@@ -1,5 +1,5 @@
 import torch
-from torch import Tensor, nn
+from torch import nn
 
 from .mmd import MMD
 
@@ -8,8 +8,12 @@ def get_mu(cond1, cond2):
     return cond1.reshape(-1, 1) * cond2.reshape(1, -1) * 1.0
 
 
-class DCC(MMD):
+class DCC(nn.Module):
     """class-aware domain discrepancy"""
+
+    def __init__(self, gamma=None):
+        super().__init__()
+        self.gamma = gamma
 
     def compute_dcc(self, dist, mu, gamma):
         rbf_kernel_dist = {}

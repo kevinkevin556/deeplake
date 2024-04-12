@@ -11,7 +11,7 @@ from torch import nn
 from torch.nn.modules.loss import _Loss
 
 from lib.discrepancy.cdd import CDD
-from lib.loss.entropy_loss import EntropyLoss, get_entropy_map
+from lib.loss.entropy_loss import EntropyLoss
 from modules.base.updater import BaseUpdater
 from modules.mmd.mmd import MMDModule
 
@@ -86,8 +86,8 @@ class CDDUpdater(BaseUpdater):
         # Extract features and make predictions for CT and MR images
         ct_image, ct_mask = images[0], masks[0]
         mr_image, mr_mask = images[1], masks[1]
-        ct_skip_outputs, ct_repr = module.feat_extractor(ct_image)
-        mr_skip_outputs, mr_repr = module.feat_extractor(mr_image)
+        _, ct_repr = module.feat_extractor(ct_image)
+        _, mr_repr = module.feat_extractor(mr_image)
         no_skip_outputs = (None, None, None, None)
 
         num_classes = 4 - 1

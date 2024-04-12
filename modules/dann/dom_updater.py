@@ -40,7 +40,7 @@ class DomUpdaterDANN(BaseUpdater):
         source_image, source_mask = images[0], masks[0]
         target_image, _ = images[1], masks[1]
         source_skips, source_feature = module.feat_extractor(source_image)
-        target_skips, target_feature = module.feat_extractor(target_image)
+        _, target_feature = module.feat_extractor(target_image)
 
         source_output = module.predictor((source_skips, source_feature))
         seg_loss = module.criterion(source_output, source_mask)

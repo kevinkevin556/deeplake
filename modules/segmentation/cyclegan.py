@@ -77,7 +77,7 @@ class CycleGanSegmentationUpdater(SegmentationUpdater):
             # Generate fake images using pretrained CycleGAN
             module.cycle_gan.set_input({"A": images, "B": images, "A_paths": "", "B_paths": ""})
             module.cycle_gan.forward()
-            fake_images = [module.cycle_gan.fake_B, module.cycle_gan.fake_A]
+            # fake_images = [module.cycle_gan.fake_B, module.cycle_gan.fake_A]
 
             # Train network with fake MR scans (generated from CT)
             ct_images, ct_mask = images, masks
