@@ -48,8 +48,6 @@ class TargetAdaptativeLoss(_Loss):
             self.mat_b[0, i] = 1
         self.mat_b = self.mat_b.to(device)
 
-        # nll
-        # weight = torch.Tensor([0 if i in self.background else 1 for i in range(num_classes)]).to(device)
         self.nll = NLLLoss()
 
     def forward(self, logits, target):
