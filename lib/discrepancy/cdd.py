@@ -60,6 +60,6 @@ class CDD(MMD):
             cdd += dcc(c1=c, c2=c, label1=source_label, label2=target_label, dist=dist) / M
         # inter
         for c1, c2 in zip(range(M), range(M)):
-            if c2 != c2:
+            if c1 != c2:
                 cdd -= dcc(c1, c2, label1=source_label, label2=target_label, dist=dist) / (M * (M - 1))
         return cdd
