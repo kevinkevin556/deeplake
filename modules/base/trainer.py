@@ -97,10 +97,7 @@ class BaseTrainer:
         self.metric = metric
         self.checkpoint_dir = checkpoint_dir
         self.device = device
-        if validator is None:
-            self.validator = BaseValidator(self.metric, is_train=True, device=self.device)
-        else:
-            self.validator = validator
+        self.validator = validator if validator else BaseValidator(self.metric, is_train=True, device=self.device)
         if dev:
             self.max_iter = 10
             self.eval_step = 3
