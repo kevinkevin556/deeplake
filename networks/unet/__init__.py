@@ -34,6 +34,7 @@ class BasicUNet(SegmentationModel):
         upsample: str = "deconv",
         skip_conn_type: int | None = 1,
     ):
+        super().__init__()
         if skip_conn_type is None:
             self.encoder = BasicUNetNoSkipEncoder(spatial_dims, in_channels, features, act, norm, bias, dropout)
             self.decoder = BasicUNetNoSkipDecoder(
@@ -50,3 +51,4 @@ class BasicUNet(SegmentationModel):
         else:
             raise ValueError(f"skip_connection take a value among {0, 1, None}.")
         self.segmentation_head = nn.Identity()
+        self.classification_head = None

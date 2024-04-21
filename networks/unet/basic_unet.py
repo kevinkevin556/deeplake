@@ -29,9 +29,11 @@ class BasicUNetIdSkip(SegmentationModel):
         dropout: float | tuple = 0.0,
         upsample: str = "deconv",
     ):
+        super().__init__()
         self.encoder = BasicUNetEncoder(spatial_dims, in_channels, features, act, norm, bias, dropout)
         self.decoder = BasicUNetDecoder(spatial_dims, out_channels, features, act, norm, bias, dropout, upsample)
         self.segmentation_head = nn.Identity()
+        self.classification_head = None
 
 
 class BasicUNetEncoder(nn.Module):
@@ -88,8 +90,7 @@ class BasicUNetDecoder(nn.Module):
         self.upcat_1 = UpCat(spatial_dims, fea[1], fea[0], fea[5], act, norm, bias, dropout, upsample, halves=False)
         self.final_conv = Conv["conv", spatial_dims](fea[5], out_channels, kernel_size=1)
 
-    def forward(self, x: torch.Tensor):
-        skips, enc_hidden = x
+    def forward(self, skips, enc_hidden):
         x4 = enc_hidden
         x0, x1, x2, x3 = skips
         u4 = self.upcat_4(x4, x3)
