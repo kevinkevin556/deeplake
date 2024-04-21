@@ -35,6 +35,7 @@ def setup(
     if dev:
         os.environ["MONAI_DEBUG"] = "True"
 
+    # checkpoint name
     suffix = "{time}_{module}_{trainer}_{updater}_LR{lr}_{optimizer}_{ct_dataset}_{mr_dataset}_Step{step}"
     info = {
         "time": datetime.now().strftime("%Y%m%d_%H%M"),
@@ -49,6 +50,7 @@ def setup(
     }
     trainer.checkpoint_dir += suffix.format(**info)
 
+    # default evaluator for testing set: SummaryValidator
     if evaluator is None:
         evaluator = SummmaryValidator(
             metric=DiceMetric(include_background=True, reduction="mean", get_not_nans=False),
