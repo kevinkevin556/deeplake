@@ -11,7 +11,8 @@ from lib.loss.target_adaptative_loss import TargetAdaptativeLoss
 from networks.cyclegan.cycle_gan_model import CycleGANModel
 from networks.unet import BasicUNet
 
-from .segmentation import SegmentationModule, SegmentationUpdater
+from .module import SegmentationModule
+from .updater import SegmentationUpdater
 
 
 class CycleGanSegmentationModule(SegmentationModule):
