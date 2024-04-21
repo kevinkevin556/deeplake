@@ -43,14 +43,12 @@ class DANNModule(nn.Module):
 
     def __init__(
         self,
-        feat_extractor: nn.Module,
-        predictor: nn.Module,
+        net: nn.Module,
         dom_classifier: nn.Module,
         roi_size: tuple,
         sw_batch_size: int,
         ct_criterion: _Loss = DiceCELoss(to_onehot_y=True, softmax=True),
         mr_criterion: _Loss = DiceCELoss(to_onehot_y=True, softmax=True),
-        criterion: _Loss = DiceCELoss(to_onehot_y=True, softmax=True),
         optimizer: str = "AdamW",
         lr: float = 0.0001,
         default_forward_branch: int = 0,
@@ -62,20 +60,18 @@ class DANNModule(nn.Module):
         self.roi_size = roi_size
         self.sw_batch_size = sw_batch_size
 
-        self.grl = GradientReversalLayer(alpha=1)
-        self.feat_extractor = feat_extractor
-        self.predictor = predictor
+        self.encoder = net.encoder  # feature extractor
+        self.decoder = net.decoder  # decoder
         self.dom_classifier = dom_classifier
+        self.grl = GradientReversalLayer(alpha=1)
+
         self.ct_criterion = ct_criterion
         self.mr_criterion = mr_criterion
-        self.criterion = criterion
         self.adv_loss = BCEWithLogitsLoss()
 
         # Set up the optimizer for training
         params = (
-            list(self.feat_extractor.parameters())
-            + list(self.predictor.parameters())
-            + list(self.dom_classifier.parameters())
+            list(self.encoder.parameters()) + list(self.decoder.parameters()) + list(self.dom_classifier.parameters())
         )
         self.lr = lr
         if optimizer == "AdamW":
@@ -94,17 +90,22 @@ class DANNModule(nn.Module):
 
     # Define the forward pass for the module
     def forward(self, x):
-        # Extract features and apply the predictor or domain classifier based on the branch
-        skip_outputs, feature = self.feat_extractor(x)
-        branch = self.default_forward_branch
-        if branch == 0:
-            output = self.predictor((skip_outputs, feature))
+        encoded = self.encoder(x)
+        if isinstance(encoded, (list, tuple)):
+            skip_outputs, feature = encoded[0:-1], encoded[-1]
+        else:
+            feature = encoded
+
+        # prediction branch
+        if self.default_forward_branch == 0:
+            output = self.decoder(*encoded)
             return output
-        elif branch == 1:
+        # domain classification branch
+        elif self.default_forward_branch == 1:
             dom_pred_logits = self.dom_classifier(self.grl.apply(feature))
             return dom_pred_logits
         else:
-            raise ValueError(f"Invalid branch number: {branch}. Expect 0 or 1.")
+            raise ValueError(f"Invalid branch number: {self.default_forward_branch}. Expect 0 or 1.")
 
     # Inference using the sliding window approach
     def inference(self, x):
@@ -113,23 +114,23 @@ class DANNModule(nn.Module):
 
     # Save the state of the model components
     def save(self, checkpoint_dir):
-        torch.save(self.feat_extractor.state_dict(), os.path.join(checkpoint_dir, "feat_extractor_state.pth"))
-        torch.save(self.predictor.state_dict(), os.path.join(checkpoint_dir, "predictor_state.pth"))
+        torch.save(self.encoder.state_dict(), os.path.join(checkpoint_dir, "encoder_state.pth"))
+        torch.save(self.decoder.state_dict(), os.path.join(checkpoint_dir, "decoder_state.pth"))
         torch.save(self.dom_classifier.state_dict(), os.path.join(checkpoint_dir, "dom_classifier_state.pth"))
 
     # Load the state of the model components
     def load(self, checkpoint_dir):
         try:
-            self.feat_extractor.load_state_dict(torch.load(os.path.join(checkpoint_dir, "feat_extractor_state.pth")))
-            self.predictor.load_state_dict(torch.load(os.path.join(checkpoint_dir, "predictor_state.pth")))
+            self.encoder.load_state_dict(torch.load(os.path.join(checkpoint_dir, "encoder_state.pth")))
+            self.decoder.load_state_dict(torch.load(os.path.join(checkpoint_dir, "decoder_state.pth")))
             self.dom_classifier.load_state_dict(torch.load(os.path.join(checkpoint_dir, "dom_classifier_state.pth")))
         except Exception as e:
             raise e
 
     # Display information about the encoder, decoder, optimizer, and losses
     def print_info(self):
-        print("Module Encoder:", self.feat_extractor.__class__.__name__)
-        print("       Decoder:", self.predictor.__class__.__name__)
+        print("Module Encoder:", self.encoder.__class__.__name__)
+        print("       Decoder:", self.decoder.__class__.__name__)
         print("Optimizer:", self.optimizer.__class__.__name__, f"(lr = {self.lr})")
         print("Segmentation Loss:", {"ct": self.ct_criterion, "mr": self.mr_criterion})
         print("Discriminator Loss:", self.adv_loss)

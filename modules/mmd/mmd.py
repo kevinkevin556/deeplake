@@ -27,8 +27,8 @@ class MMDModule(nn.Module):
 
     def __init__(
         self,
-        feat_extractor: nn.Module,
-        predictor: nn.Module,
+        encoder: nn.Module,
+        decoder: nn.Module,
         roi_size: tuple,
         sw_batch_size: int,
         ct_criterion: _Loss = DiceCELoss(to_onehot_y=True, softmax=True),
@@ -42,14 +42,14 @@ class MMDModule(nn.Module):
         self.roi_size = roi_size
         self.sw_batch_size = sw_batch_size
 
-        self.feat_extractor = feat_extractor
-        self.predictor = predictor
+        self.encoder = encoder
+        self.decoder = decoder
         self.ct_criterion = ct_criterion
         self.mr_criterion = mr_criterion
         self.discrepancy = MMD(gamma=None)
 
         # Set up the optimizer for training
-        self.params = list(self.feat_extractor.parameters()) + list(self.predictor.parameters())
+        self.params = list(self.encoder.parameters()) + list(self.decoder.parameters())
         self.lr = lr
         if optimizer == "AdamW":
             self.optimizer = AdamW(self.params, lr=self.lr)
@@ -67,8 +67,8 @@ class MMDModule(nn.Module):
 
     # Define the forward pass for the module
     def forward(self, x):
-        skip_outputs, feature = self.feat_extractor(x)
-        output = self.predictor((skip_outputs, feature))
+        skip_outputs, feature = self.encoder(x)
+        output = self.decoder((skip_outputs, feature))
         return output
 
     # Inference using the sliding window approach
@@ -78,21 +78,21 @@ class MMDModule(nn.Module):
 
     # Save the state of the model components
     def save(self, checkpoint_dir):
-        torch.save(self.feat_extractor.state_dict(), os.path.join(checkpoint_dir, "feat_extractor_state.pth"))
-        torch.save(self.predictor.state_dict(), os.path.join(checkpoint_dir, "predictor_state.pth"))
+        torch.save(self.encoder.state_dict(), os.path.join(checkpoint_dir, "encoder_state.pth"))
+        torch.save(self.decoder.state_dict(), os.path.join(checkpoint_dir, "decoder_state.pth"))
 
     # Load the state of the model components
     def load(self, checkpoint_dir):
         try:
-            self.feat_extractor.load_state_dict(torch.load(os.path.join(checkpoint_dir, "feat_extractor_state.pth")))
-            self.predictor.load_state_dict(torch.load(os.path.join(checkpoint_dir, "predictor_state.pth")))
+            self.encoder.load_state_dict(torch.load(os.path.join(checkpoint_dir, "encoder_state.pth")))
+            self.decoder.load_state_dict(torch.load(os.path.join(checkpoint_dir, "decoder_state.pth")))
         except Exception as e:
             raise e
 
     # Display information about the encoder, decoder, optimizer, and losses
     def print_info(self):
-        print("Module Encoder:", self.feat_extractor.__class__.__name__)
-        print("       Decoder:", self.predictor.__class__.__name__)
+        print("Module Encoder:", self.encoder.__class__.__name__)
+        print("       Decoder:", self.decoder.__class__.__name__)
         print("Optimizer:", self.optimizer.__class__.__name__, f"(lr = {self.lr})")
         print("Segmentation Loss:", {"ct": self.ct_criterion, "mr": self.mr_criterion})
 
@@ -108,7 +108,7 @@ class MMDUpdater(BaseUpdater):
     def check_module(self, module):
         assert isinstance(module, torch.nn.Module), "The specified module should inherit torch.nn.Module."
         assert isinstance(module, MMDModule), "The specified module should inherit MMDModule."
-        for component in ("ct_criterion", "mr_criterion", "optimizer", "feat_extractor", "predictor", "discrepancy"):
+        for component in ("ct_criterion", "mr_criterion", "optimizer", "encoder", "decoder", "discrepancy"):
             assert getattr(
                 module, component, False
             ), "The specified module should incoporate component/method: {component}"
@@ -120,10 +120,10 @@ class MMDUpdater(BaseUpdater):
         # Extract features and make predictions for CT and MR images
         ct_image, ct_mask = images[0], masks[0]
         mr_image, mr_mask = images[1], masks[1]
-        ct_skip_outputs, ct_feature = module.feat_extractor(ct_image)
-        ct_output = module.predictor((ct_skip_outputs, ct_feature))
-        mr_skip_outputs, mr_feature = module.feat_extractor(mr_image)
-        mr_output = module.predictor((mr_skip_outputs, mr_feature))
+        ct_skip_outputs, ct_feature = module.encoder(ct_image)
+        ct_output = module.decoder((ct_skip_outputs, ct_feature))
+        mr_skip_outputs, mr_feature = module.encoder(mr_image)
+        mr_output = module.decoder((mr_skip_outputs, mr_feature))
 
         # Compute segmentation losses for CT and MR images
         ct_seg_loss = module.ct_criterion(ct_output, ct_mask)

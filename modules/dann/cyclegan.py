@@ -33,10 +33,8 @@ class CycleGanDANNModule(DANNModule):
     def __init__(
         self,
         cycle_gan_ckpt_dir: str,
-        feat_extractor: nn.Module = BasicUNetEncoder(
-            spatial_dims=2, in_channels=1, features=(32, 32, 64, 128, 256, 32)
-        ),
-        predictor: nn.Module = BasicUNetDecoder(spatial_dims=2, out_channels=4, features=(32, 32, 64, 128, 256, 32)),
+        encoder: nn.Module = BasicUNetEncoder(spatial_dims=2, in_channels=1, features=(32, 32, 64, 128, 256, 32)),
+        decoder: nn.Module = BasicUNetDecoder(spatial_dims=2, out_channels=4, features=(32, 32, 64, 128, 256, 32)),
         dom_classifier: nn.Module = default_dom_classifier,
         roi_size: tuple = (512, 512),
         sw_batch_size: int = 1,
@@ -49,8 +47,8 @@ class CycleGanDANNModule(DANNModule):
         pretrained: Path | None = None,
     ):
         super().__init__(
-            feat_extractor=feat_extractor,
-            predictor=predictor,
+            encoder=encoder,
+            decoder=decoder,
             dom_classifier=dom_classifier,
             roi_size=roi_size,
             sw_batch_size=sw_batch_size,
@@ -99,7 +97,7 @@ class PartUpdaterCycleGanDANN(PartUpdaterDANN):
         masks = list(masks)
         module.optimizer.zero_grad()
 
-        # Predictor branch
+        # decoder branch
         _features = {}
         _seg_losses = {}
         _dom_pred_logits = {}
@@ -114,13 +112,13 @@ class PartUpdaterCycleGanDANN(PartUpdaterDANN):
 
         for i in [0, 1]:
             m = modalities[i][0]
-            skip_outputs, _features[i] = module.feat_extractor(images[i])
-            _output[i] = module.predictor((skip_outputs, _features[i]))
+            skip_outputs, _features[i] = module.encoder(images[i])
+            _output[i] = module.decoder((skip_outputs, _features[i]))
 
             if m == "ct":
                 _seg_losses[i] = module.ct_criterion(_output[i], masks[i])
                 fake_images[i].require_grad = False
-                pseudo_softmax = module.predictor(module.feat_extractor(fake_images[i]))
+                pseudo_softmax = module.decoder(module.encoder(fake_images[i]))
                 masks[i] += torch.argmax(pseudo_softmax, dim=1, keepdim=True) * (masks[i] == 0)
                 # pseudo_label = torch.argmax(pseudo_softmax, dim=1, keepdim=True)
                 # pseudo_foreground = set(torch.unique(pseudo_label).cpu().numpy()) - {0}
@@ -128,7 +126,7 @@ class PartUpdaterCycleGanDANN(PartUpdaterDANN):
             else:
                 _seg_losses[i] = module.mr_criterion(_output[i], masks[i])
                 fake_images[i].require_grad = False
-                pseudo_softmax = module.predictor(module.feat_extractor(fake_images[i]))
+                pseudo_softmax = module.decoder(module.encoder(fake_images[i]))
                 masks[i] += torch.argmax(pseudo_softmax, dim=1, keepdim=True) * (masks[i] == 0)
                 # pseudo_label = torch.argmax(pseudo_softmax, dim=1, keepdim=True)
                 # pseudo_foreground = set(torch.unique(pseudo_label).cpu().numpy()) - {0}

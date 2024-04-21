@@ -31,8 +31,8 @@ class PartUpdaterDANN(BaseUpdater):
             "ct_criterion",
             "mr_criterion",
             "optimizer",
-            "feat_extractor",
-            "predictor",
+            "encoder",
+            "decoder",
             "dom_classifier",
             "grl",
             "adv_loss",
@@ -48,11 +48,14 @@ class PartUpdaterDANN(BaseUpdater):
 
         # Extract features and make predictions for CT and MR images
         ct_image, ct_mask = images[0], masks[0]
+        ct_encoded = module.encoder(ct_image)
+        ct_output = module.decoder(*ct_encoded)
+        ct_feature = ct_encoded[-1] if isinstance(ct_encoded, (list, tuple)) else ct_encoded
+
         mr_image, mr_mask = images[1], masks[1]
-        ct_skip_outputs, ct_feature = module.feat_extractor(ct_image)
-        ct_output = module.predictor((ct_skip_outputs, ct_feature))
-        mr_skip_outputs, mr_feature = module.feat_extractor(mr_image)
-        mr_output = module.predictor((mr_skip_outputs, mr_feature))
+        mr_encoded = module.encoder(mr_image)
+        mr_output = module.decoder(*mr_encoded)
+        mr_feature = mr_encoded[-1] if isinstance(mr_encoded, (list, tuple)) else mr_encoded
 
         # Compute segmentation losses for CT and MR images
         ct_seg_loss = module.ct_criterion(ct_output, ct_mask)

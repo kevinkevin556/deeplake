@@ -26,7 +26,7 @@ class DomUpdaterDANN(BaseUpdater):
     def check_module(self, module):
         assert isinstance(module, torch.nn.Module), "The specified module should inherit torch.nn.Module."
         assert isinstance(module, DANNModule), "The specified module should inherit DANNModule."
-        for component in ("criterion", "optimizer", "feat_extractor", "predictor", "dom_classifier", "grl", "adv_loss"):
+        for component in ("criterion", "optimizer", "encoder", "decoder", "dom_classifier", "grl", "adv_loss"):
             assert getattr(
                 module, component, False
             ), "The specified module should incoporate component/method: {component}"
@@ -39,10 +39,10 @@ class DomUpdaterDANN(BaseUpdater):
         # Segmentation
         source_image, source_mask = images[0], masks[0]
         target_image, _ = images[1], masks[1]
-        source_skips, source_feature = module.feat_extractor(source_image)
-        _, target_feature = module.feat_extractor(target_image)
+        source_skips, source_feature = module.encoder(source_image)
+        _, target_feature = module.encoder(target_image)
 
-        source_output = module.predictor((source_skips, source_feature))
+        source_output = module.decoder((source_skips, source_feature))
         seg_loss = module.criterion(source_output, source_mask)
         seg_loss.backward(retain_graph=True)
 

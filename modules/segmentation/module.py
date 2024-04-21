@@ -80,8 +80,8 @@ class SegmentationEncoderDecoder(nn.Module):
 
     def __init__(
         self,
-        feat_extractor: nn.Module,
-        predictor: nn.Module,
+        encoder: nn.Module,
+        decoder: nn.Module,
         roi_size: tuple,
         sw_batch_size: int,
         criterion: _Loss = DiceCELoss(to_onehot_y=True, softmax=True),
@@ -94,10 +94,10 @@ class SegmentationEncoderDecoder(nn.Module):
         self.criterion = criterion
         self.lr = lr
 
-        self.feat_extractor = feat_extractor
-        self.predictor = predictor
+        self.encoder = encoder
+        self.decoder = decoder
 
-        params = list(self.feat_extractor.parameters()) + list(self.predictor.parameters())
+        params = list(self.encoder.parameters()) + list(self.decoder.parameters())
         differentiable_params = [p for p in params if p.requires_grad]
         # TODO: replace these assignment with partials
         if optimizer == "AdamW":
@@ -108,8 +108,8 @@ class SegmentationEncoderDecoder(nn.Module):
             self.optimizer = SGD(differentiable_params, lr=self.lr)
 
     def forward(self, x):
-        feature, skip_outputs = self.feat_extractor(x)
-        y = self.predictor((feature, skip_outputs))
+        encoded = self.encoder(x)
+        y = self.decoder(*encoded) if isinstance(encoded, (list.tuple)) else self.decoder(encoded)
         return y
 
     def inference(self, x):
@@ -119,15 +119,15 @@ class SegmentationEncoderDecoder(nn.Module):
 
     def save(self, checkpoint_dir):
         Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
-        torch.save(self.feat_extractor.state_dict(), os.path.join(checkpoint_dir, "feat_extractor_state.pth"))
-        torch.save(self.predictor.state_dict(), os.path.join(checkpoint_dir, "predictor_state.pth"))
+        torch.save(self.encoder.state_dict(), os.path.join(checkpoint_dir, "encoder_state.pth"))
+        torch.save(self.decoder.state_dict(), os.path.join(checkpoint_dir, "decoder_state.pth"))
 
     def load(self, checkpoint_dir):
-        self.feat_extractor.load_state_dict(torch.load(os.path.join(checkpoint_dir, "feat_extractor_state.pth")))
-        self.predictor.load_state_dict(torch.load(os.path.join(checkpoint_dir, "predictor_state.pth")))
+        self.encoder.load_state_dict(torch.load(os.path.join(checkpoint_dir, "encoder_state.pth")))
+        self.decoder.load_state_dict(torch.load(os.path.join(checkpoint_dir, "decoder_state.pth")))
 
     def print_info(self):
-        print("Module Encoder:", self.feat_extractor.__class__.__name__)
-        print("       Decoder:", self.predictor.__class__.__name__)
+        print("Module Encoder:", self.encoder.__class__.__name__)
+        print("       Decoder:", self.decoder.__class__.__name__)
         print("Optimizer:", self.optimizer.__class__.__name__, f"(lr = {self.lr})")
         print("Loss function:", repr(self.criterion))
