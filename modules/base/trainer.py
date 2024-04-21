@@ -161,7 +161,7 @@ class BaseTrainer:
                 "step": step + 1,
                 "max_iter": self.max_iter,
                 "modality_label": modality_label,
-                "loss": torch.Tensor(loss),
+                "loss": loss,
             }
             train_pbar.set_description(self.pbar_description.format(**info))
             logger.log_train(module.criterion, loss, step)
