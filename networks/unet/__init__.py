@@ -32,19 +32,19 @@ class BasicUNet(SegmentationModel):
         bias: bool = True,
         dropout: float | tuple = 0.0,
         upsample: str = "deconv",
-        skip_connections: int | None = 1,
+        skip_conn_type: int | None = 1,
     ):
-        if skip_connections is None:
+        if skip_conn_type is None:
             self.encoder = BasicUNetNoSkipEncoder(spatial_dims, in_channels, features, act, norm, bias, dropout)
             self.decoder = BasicUNetNoSkipDecoder(
                 spatial_dims, out_channels, features, act, norm, bias, dropout, upsample
             )
-        elif skip_connections == 0:
+        elif skip_conn_type == 0:
             self.encoder = BasicUNetZeroSkipEncoder(spatial_dims, in_channels, features, act, norm, bias, dropout)
             self.decoder = BasicUNetZeroSkipDecoder(
                 spatial_dims, out_channels, features, act, norm, bias, dropout, upsample
             )
-        elif skip_connections == 1:
+        elif skip_conn_type == 1:
             self.encoder = BasicUNetEncoder(spatial_dims, in_channels, features, act, norm, bias, dropout)
             self.decoder = BasicUNetDecoder(spatial_dims, out_channels, features, act, norm, bias, dropout, upsample)
         else:
