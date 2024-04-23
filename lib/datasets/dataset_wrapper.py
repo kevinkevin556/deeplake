@@ -86,7 +86,7 @@ class Dataset(ABC):
 
         if self.return_dataloader:
             return (
-                DataLoader(self.train_dataset, batch_size=self.train_batch_size, shuffle=~self.dev),
+                DataLoader(self.train_dataset, batch_size=self.train_batch_size, shuffle=~self.dev, drop_last=True),
                 DataLoader(self.val_dataset, batch_size=1, shuffle=False),
                 DataLoader(self.test_dataset, batch_size=1, shuffle=False),
             )
