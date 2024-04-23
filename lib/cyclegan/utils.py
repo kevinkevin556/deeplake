@@ -1,6 +1,9 @@
 import dataclasses
+from pathlib import Path
 
 import yaml
+
+from networks.cyclegan import CycleGANModel
 
 
 def get_option(opt_file_path: str):
@@ -18,3 +21,13 @@ def get_option(opt_file_path: str):
     Option = dataclasses.make_dataclass("Option", [(k, type(v)) for k, v in opt_dict.items()])
     opt = Option(**opt_dict)
     return opt
+
+
+def load_cyclegan(checkpoints_dir, option_filename="opt.txt", which_epoch="latest"):
+    options = get_option(Path(checkpoints_dir) / option_filename)
+    options.isTrain = False
+    options.checkpoints_dir = Path(checkpoints_dir).parent.absolute()
+    cyclegan = CycleGANModel()
+    cyclegan.initialize(options)
+    cyclegan.load_networks(which_epoch)
+    return cyclegan
