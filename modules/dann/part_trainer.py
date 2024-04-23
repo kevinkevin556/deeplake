@@ -6,6 +6,7 @@ from typing import Literal
 import numpy as np
 from monai.data import DataLoader
 from monai.metrics import DiceMetric, Metric
+from torch import Tensor
 from tqdm import tqdm
 
 from modules.base.trainer import BaseTrainer, TrainLogger
@@ -85,8 +86,8 @@ class PartTrainerDANN(BaseTrainer):
 
             # Load batches based on sampling mode
             batch1, batch2 = get_batch(ct_dataloader[0], mr_dataloader[0], mode=updater.sampling_mode)
-            images = batch1["image"].to(self.device), batch2["image"].to(self.device)
-            masks = batch1["label"].to(self.device), batch2["label"].to(self.device)
+            images = Tensor(batch1["image"]).to(self.device), Tensor(batch2["image"]).to(self.device)
+            masks = Tensor(batch1["label"]).to(self.device), Tensor(batch2["label"]).to(self.device)
             modalities = batch1["modality"], batch2["modality"]
 
             # Adjust gradient reversal layer lambda based on training progress
@@ -109,6 +110,7 @@ class PartTrainerDANN(BaseTrainer):
 
             # Perform validation at specified intervals and save model if performance improves
             if ((step + 1) % self.eval_step == 0) or (step == self.max_iter - 1):
+                module.eval()
                 val_metrics = self.validator(module, (ct_dataloader[1], mr_dataloader[1]), global_step=step)
 
                 # Update summary writer
