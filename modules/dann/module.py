@@ -12,6 +12,8 @@ from torch.nn import BCEWithLogitsLoss
 from torch.nn.modules.loss import _Loss
 from torch.optim import SGD, Adam, AdamW
 
+from lib.misc import Concat
+
 
 # Define a gradient reversal layer for domain adaptation in neural networks
 class GradientReversalLayer(torch.autograd.Function):
@@ -60,9 +62,11 @@ class DANNModule(nn.Module):
         self.roi_size = roi_size
         self.sw_batch_size = sw_batch_size
 
+        net = net.to(device)
         self.encoder = net.encoder  # feature extractor
-        self.decoder = net.decoder  # decoder
-        self.dom_classifier = dom_classifier
+        self.decoder = Concat(net.decoder, getattr(net, "segmentation_head", nn.Identity()))  # predictor
+
+        self.dom_classifier = dom_classifier.to(device)
         self.grl = GradientReversalLayer(alpha=1)
 
         self.ct_criterion = ct_criterion
@@ -86,8 +90,6 @@ class DANNModule(nn.Module):
         if pretrained:
             self.load(pretrained)
 
-        self.to(device)
-
     # Define the forward pass for the module
     def forward(self, x):
         encoded = self.encoder(x)
@@ -106,6 +108,11 @@ class DANNModule(nn.Module):
             return dom_pred_logits
         else:
             raise ValueError(f"Invalid branch number: {self.default_forward_branch}. Expect 0 or 1.")
+
+    def train(self, mode=True):
+        self.encoder.train(mode)
+        self.decoder.train(mode)
+        self.dom_classifier.train(mode)
 
     # Inference using the sliding window approach
     def inference(self, x):
