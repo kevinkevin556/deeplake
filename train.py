@@ -70,9 +70,9 @@ def save_config_to(dir_path):
     yaml = YAML()
     yaml.indent(mapping=2, sequence=4, offset=2)
     yaml.preserve_quotes = True
-    with open(cfg_path, "r") as stream:
+    with open(cfg_path, "r", encoding="utf8") as stream:
         cfg_data = yaml.load(stream)
-    with open(target_path, "w") as file:
+    with open(target_path, "w", encoding="utf8") as file:
         yaml.dump(cfg_data, file)
 
 
