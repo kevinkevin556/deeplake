@@ -95,10 +95,7 @@ class DANNModule(nn.Module):
     # Define the forward pass for the module
     def forward(self, x):
         encoded = self.encoder(x)
-        if isinstance(encoded, (list, tuple)):
-            skip_outputs, feature = encoded[0:-1], encoded[-1]
-        else:
-            feature = encoded
+        feature = encoded[-1] if isinstance(encoded, (list, tuple)) else encoded
 
         # prediction branch
         if self.default_forward_branch == 0:

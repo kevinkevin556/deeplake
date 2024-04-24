@@ -109,7 +109,7 @@ class SegmentationEncoderDecoder(nn.Module):
 
     def forward(self, x):
         encoded = self.encoder(x)
-        y = self.decoder(*encoded) if isinstance(encoded, (list.tuple)) else self.decoder(encoded)
+        y = self.decoder(*encoded) if isinstance(encoded, (list, tuple)) else self.decoder(encoded)
         return y
 
     def inference(self, x):

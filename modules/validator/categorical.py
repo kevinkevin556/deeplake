@@ -113,7 +113,7 @@ class CategoricalMinValidator(CategoricalValidator):
         tqdm.write(repr(pd.DataFrame.from_dict(metric_means, orient="index")))
 
         output = {}
-        for modality in ["mean", "ct", "mr"]:
+        for modality in ("mean", "ct", "mr"):
             modality_metrics = [
                 metric_means[c][modality] for c in metric_means.keys() if not np.isnan(metric_means[c][modality])
             ]

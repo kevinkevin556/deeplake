@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-import numpy as np
 import torch
 from monai.losses import DiceCELoss
 from torch import nn
@@ -64,7 +63,7 @@ class PartUpdaterCycleGanDANN(PartUpdaterDANN):
     @staticmethod
     def grl_lambda(step, max_iter):
         p = float(step) / max_iter
-        grl_lambda = 2.0 / (1.0 + np.exp(-8 * p)) - 1
+        # grl_lambda = 2.0 / (1.0 + np.exp(-8 * p)) - 1
         return p
 
     def check_module(self, module):
@@ -79,10 +78,10 @@ class PartUpdaterCycleGanDANN(PartUpdaterDANN):
         module.optimizer.zero_grad()
 
         ct, mr = "A", "B"
-        fake_mr = module.cyclegan.generate_image(input=images[0], from_domain=ct)
-        fake_ct = module.cyclegan.generate_image(input=images[1], from_domain=mr)
+        fake_mr = module.cyclegan.generate_image(input_image=images[0], from_domain=ct)
+        fake_ct = module.cyclegan.generate_image(input_image=images[1], from_domain=mr)
 
-        for i in [0, 1]:
+        for i in (0, 1):
             m = modalities[i][0]
 
             if m == "ct":
