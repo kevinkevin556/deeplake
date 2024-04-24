@@ -64,7 +64,9 @@ class DANNModule(nn.Module):
 
         net = net.to(device)
         self.encoder = net.encoder  # feature extractor
-        self.decoder = Concat(net.decoder, getattr(net, "segmentation_head", nn.Identity()))  # predictor
+        self.decoder = (
+            Concat(net.decoder, net.segmentation_head) if getattr(net, "segmentation_head") else net.decoder
+        )  # predictor
 
         self.dom_classifier = dom_classifier.to(device)
         self.grl = GradientReversalLayer(alpha=1)
