@@ -50,5 +50,5 @@ class BasicUNet(SegmentationModel):
             self.decoder = BasicUNetDecoder(spatial_dims, out_channels, features, act, norm, bias, dropout, upsample)
         else:
             raise ValueError(f"skip_connection take a value among {0, 1, None}.")
-        self.segmentation_head = nn.Identity()
+        self.segmentation_head = None
         self.classification_head = None
