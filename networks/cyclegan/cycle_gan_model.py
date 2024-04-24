@@ -45,11 +45,11 @@ class CycleGANModel(BaseModel):
             self.gpu_ids,
         )
 
-    def set_input(self, input):
+    def set_input(self, input_data):
         AtoB = self.opt.which_direction == "AtoB"
-        self.real_A = input["A" if AtoB else "B"].to(self.device)
-        self.real_B = input["B" if AtoB else "A"].to(self.device)
-        self.image_paths = input["A_paths" if AtoB else "B_paths"]
+        self.real_A = input_data["A" if AtoB else "B"].to(self.device)
+        self.real_B = input_data["B" if AtoB else "A"].to(self.device)
+        self.image_paths = input_data["A_paths" if AtoB else "B_paths"]
 
     def forward(self):
         self.fake_B = self.netG_A(self.real_A)
@@ -57,10 +57,10 @@ class CycleGANModel(BaseModel):
         self.fake_A = self.netG_B(self.real_B)
         self.rec_B = self.netG_A(self.fake_A)
 
-    def generate_image(self, input, from_domain: Literal["A", "B"]):
+    def generate_image(self, input_image, from_domain: Literal["A", "B"]):
         if from_domain == "A":
-            return self.netG_A(input.to(self.device))
+            return self.netG_A(input_image.to(self.device))
         elif from_domain == "B":
-            return self.netG_B(input.to(self.device))
+            return self.netG_B(input_image.to(self.device))
         else:
             raise ValueError("Invalid domain index.")

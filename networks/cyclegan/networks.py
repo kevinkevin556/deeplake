@@ -7,9 +7,8 @@
 import functools
 
 import torch
-import torch.nn as nn
+from torch import nn
 from torch.nn import init
-from torch.optim import lr_scheduler
 
 ###############################################################################
 # Helper Functions

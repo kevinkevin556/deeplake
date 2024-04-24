@@ -1,6 +1,6 @@
 # segmentation_models_pytorch/base/initialization.py
 
-import torch.nn as nn
+from torch import nn
 
 
 def initialize_decoder(module):
