@@ -9,33 +9,26 @@ from monai.losses import DiceCELoss
 from torch import nn
 from torch.nn.modules.loss import _Loss
 
-from lib.cycle_gan.get_options import get_option
+from lib.cyclegan.utils import load_cyclegan
 from lib.loss.target_adaptative_loss import TargetAdaptativeLoss
 from modules.dann.module import DANNModule
 from modules.dann.part_updater import PartUpdaterDANN
-from networks.cyclegan.cycle_gan_model import CycleGANModel
-from networks.unet import BasicUNetDecoder, BasicUNetEncoder
-
-default_dom_classifier = nn.Sequential(
-    nn.Conv2d(256, 32, kernel_size=3, padding=1),
-    nn.MaxPool2d(kernel_size=2),
-    nn.LeakyReLU(0.01),
-    nn.Conv2d(32, 1, kernel_size=3, padding=1),
-    nn.MaxPool2d(kernel_size=2),
-    nn.LeakyReLU(0.01),
-    # nn.Flatten(),
-    # nn.Linear(4096, 1),
-    nn.AdaptiveAvgPool2d(output_size=1),
-)
 
 
 class CycleGanDANNModule(DANNModule):
     def __init__(
         self,
-        cycle_gan_ckpt_dir: str,
-        encoder: nn.Module = BasicUNetEncoder(spatial_dims=2, in_channels=1, features=(32, 32, 64, 128, 256, 32)),
-        decoder: nn.Module = BasicUNetDecoder(spatial_dims=2, out_channels=4, features=(32, 32, 64, 128, 256, 32)),
-        dom_classifier: nn.Module = default_dom_classifier,
+        cyclegan_checkpoints_dir: str,
+        net: nn.Module = None,
+        dom_classifier: nn.Module = nn.Sequential(
+            nn.Conv2d(256, 32, kernel_size=3, padding=1),
+            nn.MaxPool2d(kernel_size=2),
+            nn.LeakyReLU(0.01),
+            nn.Conv2d(32, 1, kernel_size=3, padding=1),
+            nn.MaxPool2d(kernel_size=2),
+            nn.LeakyReLU(0.01),
+            nn.AdaptiveAvgPool2d(output_size=1),
+        ),
         roi_size: tuple = (512, 512),
         sw_batch_size: int = 1,
         ct_criterion: _Loss = TargetAdaptativeLoss(num_classes=4, background_classes=[0, 1, 2]),
@@ -47,8 +40,7 @@ class CycleGanDANNModule(DANNModule):
         pretrained: Path | None = None,
     ):
         super().__init__(
-            encoder=encoder,
-            decoder=decoder,
+            net=net,
             dom_classifier=dom_classifier,
             roi_size=roi_size,
             sw_batch_size=sw_batch_size,
@@ -60,12 +52,7 @@ class CycleGanDANNModule(DANNModule):
             device=device,
             pretrained=pretrained,
         )
-        self.cycle_gan = CycleGANModel()
-        options = get_option(Path(cycle_gan_ckpt_dir) / "opt.txt")
-        options.isTrain = False
-        options.checkpoints_dir = Path(cycle_gan_ckpt_dir).parent.absolute()
-        self.cycle_gan.initialize(options)
-        self.cycle_gan.load_networks("latest")
+        self.cyclegan = load_cyclegan(cyclegan_checkpoints_dir, which_epoch="latest")
         self.dice2 = DiceCELoss(softmax=True, to_onehot_y=True)
 
 
@@ -78,74 +65,60 @@ class PartUpdaterCycleGanDANN(PartUpdaterDANN):
     def grl_lambda(step, max_iter):
         p = float(step) / max_iter
         grl_lambda = 2.0 / (1.0 + np.exp(-8 * p)) - 1
-        return grl_lambda
+        return p
 
     def check_module(self, module):
         super().check_module(module)
         assert isinstance(module, CycleGanDANNModule), "The specified module should inherit CycleGanDANNModule."
-        assert getattr(module, "cycle_gan", False), "The specified module should incoporate component/method: cycle_gan"
+        assert getattr(module, "cyclegan", False), "The specified module should incoporate component/method: cycle_gan"
 
     def update(self, module, images, masks, modalities, alpha):
-
-        #####
-        # TODO -
-        #   The code should be cleaned and clarified with commensts.
-        #   There are some obsolute and redundant variables in this function.
-        #####
 
         module.grl.set_alpha(alpha)
         masks = list(masks)
         module.optimizer.zero_grad()
 
-        # decoder branch
-        _features = {}
-        _seg_losses = {}
-        _dom_pred_logits = {}
-        _output = {}
-
-        module.cycle_gan.set_input({"A": images[0], "B": images[1], "A_paths": "", "B_paths": ""})
-        module.cycle_gan.forward()
-
-        fake_images = [module.cycle_gan.fake_B, module.cycle_gan.fake_A]
-        # foreground = {"ct": set(module.ct_criterion.foreground), "mr": set(module.mr_criterion.foreground)}
-        # num_classes = module.ct_criterion.num_classes
+        ct, mr = "A", "B"
+        fake_mr = module.cyclegan.generate_image(input=images[0], from_domain=ct)
+        fake_ct = module.cyclegan.generate_image(input=images[1], from_domain=mr)
 
         for i in [0, 1]:
             m = modalities[i][0]
-            skip_outputs, _features[i] = module.encoder(images[i])
-            _output[i] = module.decoder((skip_outputs, _features[i]))
 
             if m == "ct":
-                _seg_losses[i] = module.ct_criterion(_output[i], masks[i])
-                fake_images[i].require_grad = False
-                pseudo_softmax = module.decoder(module.encoder(fake_images[i]))
-                masks[i] += torch.argmax(pseudo_softmax, dim=1, keepdim=True) * (masks[i] == 0)
-                # pseudo_label = torch.argmax(pseudo_softmax, dim=1, keepdim=True)
-                # pseudo_foreground = set(torch.unique(pseudo_label).cpu().numpy()) - {0}
-                _seg_losses[i] += module.dice2(_output[i], masks[i])
+                ct_encoded = module.encoder(images[i])
+                ct_output = module.decoder(*ct_encoded)
+                ct_feature = ct_encoded[-1] if isinstance(ct_encoded, (list, tuple)) else ct_encoded
+                ct_seg_loss = module.ct_criterion(ct_output, masks[i])
+
+                fake_mr.require_grad = False
+                pseudo_softmax = module.decoder(*module.encoder(fake_mr))
+                pseudo_label = masks[i] + torch.argmax(pseudo_softmax, dim=1, keepdim=True) * (masks[i] == 0)
+                ct_seg_loss += module.dice2(ct_output, pseudo_label)
             else:
-                _seg_losses[i] = module.mr_criterion(_output[i], masks[i])
-                fake_images[i].require_grad = False
-                pseudo_softmax = module.decoder(module.encoder(fake_images[i]))
-                masks[i] += torch.argmax(pseudo_softmax, dim=1, keepdim=True) * (masks[i] == 0)
-                # pseudo_label = torch.argmax(pseudo_softmax, dim=1, keepdim=True)
-                # pseudo_foreground = set(torch.unique(pseudo_label).cpu().numpy()) - {0}
-                _seg_losses[i] += module.dice2(_output[i], masks[i])
-            _seg_losses[i].backward(retain_graph=True)
+                mr_encoded = module.encoder(images[i])
+                mr_output = module.decoder(*mr_encoded)
+                mr_feature = mr_encoded[-1] if isinstance(mr_encoded, (list, tuple)) else mr_encoded
+                mr_seg_loss = module.mr_criterion(mr_output, masks[i])
 
-        seg_loss = _seg_losses[0] + _seg_losses[1]
-        # seg_loss.backward(retain_graph=True)
+                fake_ct.require_grad = False
+                pseudo_softmax = module.decoder(*module.encoder(fake_ct))
+                pseudo_label = masks[i] + torch.argmax(pseudo_softmax, dim=1, keepdim=True) * (masks[i] == 0)
+                mr_seg_loss += module.dice2(mr_output, pseudo_label)
 
-        # Domain Classifier branch: predict domain equivalent
-        for i in [0, 1]:
-            _dom_pred_logits[i] = module.dom_classifier(module.grl.apply(_features[i]))
-        ct_shape = _dom_pred_logits[0].shape
-        mr_shape = _dom_pred_logits[1].shape
-        dom_pred_logits = torch.cat([_dom_pred_logits[0], _dom_pred_logits[1]])
-        if modalities[0][0] == "ct":
-            dom_true_label = torch.cat((torch.zeros(ct_shape, device="cuda"), torch.ones(mr_shape, device="cuda")))
-        else:
-            dom_true_label = torch.cat((torch.ones(ct_shape, device="cuda"), torch.zeros(mr_shape, device="cuda")))
+        seg_loss = ct_seg_loss + mr_seg_loss
+        seg_loss.backward(retain_graph=True)
+
+        # Compute adversarial loss for domain classification
+        ct_dom_pred_logits = module.dom_classifier(module.grl.apply(ct_feature))
+        mr_dom_pred_logits = module.dom_classifier(module.grl.apply(mr_feature))
+
+        # Combine domain predictions and true labels
+        ct_shape, mr_shape = ct_dom_pred_logits.shape, mr_dom_pred_logits.shape
+        dom_pred_logits = torch.cat([ct_dom_pred_logits, mr_dom_pred_logits])
+        dom_true_label = torch.cat((torch.ones(ct_shape, device="cuda"), torch.zeros(mr_shape, device="cuda")))
+
+        # Calculate adversarial loss and perform backward pass
         adv_loss = module.adv_loss(dom_pred_logits, dom_true_label)
         adv_loss.backward()
 
