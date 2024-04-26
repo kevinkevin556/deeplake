@@ -14,9 +14,11 @@ class PartUpdaterDANN(BaseUpdater):
     def __init__(
         self,
         sampling_mode: Literal["sequential", "random_swap", "random_choice"] = "sequential",
+        pixel_level_adv: bool = False,
     ):
         super().__init__()
         self.sampling_mode = sampling_mode
+        self.pixel_level_adv = pixel_level_adv
 
     @staticmethod
     def grl_lambda(step, max_iter):
@@ -39,7 +41,7 @@ class PartUpdaterDANN(BaseUpdater):
         ):
             assert getattr(
                 module, component, False
-            ), "The specified module should incoporate component/method: {component}"
+            ), f"The specified module should incoporate component/method: {component}"
 
     def update(self, module, images, masks, modalities, alpha=1):
         # Set alpha value for the gradient reversal layer and reset gradients
@@ -66,12 +68,18 @@ class PartUpdaterDANN(BaseUpdater):
         seg_loss.backward(retain_graph=True)
 
         # Compute adversarial loss for domain classification
-        ct_dom_pred_logits = module.dom_classifier(module.grl.apply(ct_feature))
-        mr_dom_pred_logits = module.dom_classifier(module.grl.apply(mr_feature))
+        if not self.pixel_level_adv:
+            ct_dom_pred_logits = module.dom_classifier(module.grl.apply(ct_feature))
+            mr_dom_pred_logits = module.dom_classifier(module.grl.apply(mr_feature))
+        else:
+            ct_dom_pred_logits = module.dom_classifier(None, module.grl.apply(ct_feature))
+            mr_dom_pred_logits = module.dom_classifier(None, module.grl.apply(mr_feature))
+
         # Combine domain predictions and true labels
         ct_shape, mr_shape = ct_dom_pred_logits.shape, mr_dom_pred_logits.shape
         dom_pred_logits = torch.cat([ct_dom_pred_logits, mr_dom_pred_logits])
         dom_true_label = torch.cat((ones(ct_shape, device="cuda"), zeros(mr_shape, device="cuda")))
+
         # Calculate adversarial loss and perform backward pass
         adv_loss = module.adv_loss(dom_pred_logits, dom_true_label)
         adv_loss.backward()
