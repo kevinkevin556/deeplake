@@ -52,9 +52,10 @@ def setup(
 
     # default evaluator for testing set: SummaryValidator
     if evaluator is None:
+        num_classes = getattr(ct_data, "num_classes", mr_data.num_classes)
         evaluator = SummmaryValidator(
             metric=DiceMetric(include_background=True, reduction="mean", get_not_nans=False),
-            num_classes=ct_data.num_classes,
+            num_classes=num_classes,
         )
     return ct_data, mr_data, module, trainer, updater, evaluator
 
