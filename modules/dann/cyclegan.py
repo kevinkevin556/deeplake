@@ -62,6 +62,9 @@ class PartUpdaterCycleGanDANN(PartUpdaterDANN):
     ):
         super().__init__()
         self.sampling_mode = "sequential"
+
+        # instead of predicting domain label of the whole image
+        # predict the domain label of all pixels
         self.pixel_level_adv = pixel_level_adv
 
     @staticmethod

@@ -1,3 +1,6 @@
+# TODO Rewrite the updater
+# This is buggy.
+
 from __future__ import annotations
 
 from pathlib import Path
