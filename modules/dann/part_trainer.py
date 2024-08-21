@@ -41,7 +41,8 @@ class PartTrainerDANN(BaseTrainer):
         dev: bool = False,
         validator: BaseValidator | None = None,
     ):
-        super().__init__(max_iter, eval_step, metric, checkpoint_dir, device, dev, validator)
+        super().__init__(max_iter, eval_step, metric, validator, checkpoint_dir, device, "monai", dev)
+
         self.pbar_description = (
             "Training ({step} / {max_iter} Steps) ({modality1},{modality2})"
             "(grl_lambda={grl_lambda:2.3f})"

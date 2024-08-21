@@ -12,6 +12,8 @@ from torch.nn import BCEWithLogitsLoss
 from torch.nn.modules.loss import _Loss
 from torch.optim import SGD, Adam, AdamW
 
+from lib.cyclegan.utils import load_cyclegan
+from lib.loss.target_adaptative_loss import TargetAdaptativeLoss
 from lib.misc import Concat
 
 
@@ -114,7 +116,7 @@ class DANNModule(nn.Module):
         self.dom_classifier.train(mode)
 
     # Inference using the sliding window approach
-    def inference(self, x):
+    def inference(self, x, **kwargs):
         self.eval()
         return sliding_window_inference(x, self.roi_size, self.sw_batch_size, self.forward)
 
@@ -140,3 +142,44 @@ class DANNModule(nn.Module):
         print("Optimizer:", self.optimizer.__class__.__name__, f"(lr = {self.lr})")
         print("Segmentation Loss:", {"ct": self.ct_criterion, "mr": self.mr_criterion})
         print("Discriminator Loss:", self.adv_loss)
+
+
+class CycleGanDANNModule(DANNModule):
+    def __init__(
+        self,
+        cyclegan_checkpoints_dir: str,
+        net: nn.Module = None,
+        dom_classifier: nn.Module = nn.Sequential(
+            nn.Conv2d(256, 32, kernel_size=3, padding=1),
+            nn.MaxPool2d(kernel_size=2),
+            nn.LeakyReLU(0.01),
+            nn.Conv2d(32, 1, kernel_size=3, padding=1),
+            nn.MaxPool2d(kernel_size=2),
+            nn.LeakyReLU(0.01),
+            nn.AdaptiveAvgPool2d(output_size=1),
+        ),
+        roi_size: tuple = (512, 512),
+        sw_batch_size: int = 1,
+        ct_criterion: _Loss = TargetAdaptativeLoss(num_classes=4, background_classes=[0, 1, 2]),
+        mr_criterion: _Loss = TargetAdaptativeLoss(num_classes=4, background_classes=[0, 3]),
+        optimizer: str = "AdamW",
+        lr: float = 0.0001,
+        default_forward_branch: int = 0,
+        device: Literal["cuda", "cpu"] = "cuda",
+        pretrained: Path | None = None,
+    ):
+        super().__init__(
+            net=net,
+            dom_classifier=dom_classifier,
+            roi_size=roi_size,
+            sw_batch_size=sw_batch_size,
+            ct_criterion=ct_criterion,
+            mr_criterion=mr_criterion,
+            optimizer=optimizer,
+            lr=lr,
+            default_forward_branch=default_forward_branch,
+            device=device,
+            pretrained=pretrained,
+        )
+        self.cyclegan = load_cyclegan(cyclegan_checkpoints_dir, which_epoch="latest")
+        self.dice2 = DiceCELoss(softmax=True, to_onehot_y=True)
