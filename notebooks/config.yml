@@ -1,0 +1,7 @@
+name: new-train-01,
+optimizer: adam
+lr: 0.001
+scheduler: null
+init_method: kaiming
+checkpoint_dir: ./checkpoints
+max_iter: 1000
