@@ -13,6 +13,10 @@ from torch.nn.modules.loss import _Loss
 from torch.optim import SGD, Adam, AdamW
 from torch.utils.data import DataLoader as PyTorchDataLoader
 
+from lib.cyclegan.utils import load_cyclegan
+from lib.loss.target_adaptative_loss import TargetAdaptativeLoss
+from networks.unet import BasicUNet
+
 DataLoader = Union[MonaiDataLoader, PyTorchDataLoader]
 
 
@@ -57,7 +61,7 @@ class SegmentationModule(nn.Module):
         y = self.net(x)
         return y
 
-    def inference(self, x):
+    def inference(self, x, modality):
         # Using sliding windows
         self.eval()
         return sliding_window_inference(x, self.roi_size, self.sw_batch_size, self.forward)
@@ -131,3 +135,39 @@ class SegmentationEncoderDecoder(nn.Module):
         print("       Decoder:", self.decoder.__class__.__name__)
         print("Optimizer:", self.optimizer.__class__.__name__, f"(lr = {self.lr})")
         print("Loss function:", repr(self.criterion))
+
+
+class CycleGanSegmentationModule(SegmentationModule):
+    def __init__(
+        self,
+        cyclegan_checkpoints_dir: str,
+        net: nn.Module = BasicUNet(spatial_dims=2, in_channels=1, out_channels=4, features=(32, 32, 64, 128, 256, 32)),
+        roi_size: tuple = (512, 512),
+        sw_batch_size: int = 1,
+        ct_criterion: _Loss = TargetAdaptativeLoss(num_classes=4, background_classes=[0, 1, 2]),
+        mr_criterion: _Loss = TargetAdaptativeLoss(num_classes=4, background_classes=[0, 3]),
+        optimizer: str = "AdamW",
+        lr: float = 0.0001,
+        device: Literal["cuda", "cpu"] = "cuda",
+        pretrained: Path | None = None,
+    ):
+        super().__init__(
+            net=net,
+            roi_size=roi_size,
+            sw_batch_size=sw_batch_size,
+            criterion=None,
+            optimizer=optimizer,
+            lr=lr,
+            device=device,
+            pretrained=pretrained,
+        )
+        self.ct_criterion = ct_criterion
+        self.mr_criterion = mr_criterion
+        # self.cycle_gan = CycleGANModel()
+        self.cyclegan = load_cyclegan(cyclegan_checkpoints_dir, which_epoch="latest")
+
+    def print_info(self):
+        print("Module:", self.net.__class__.__name__)
+        print("Optimizer:", self.optimizer.__class__.__name__, f"(lr = {self.lr})")
+        print("Loss function - CT:", repr(self.ct_criterion))
+        print("Loss function - MR:", repr(self.mr_criterion))

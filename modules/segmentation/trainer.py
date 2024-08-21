@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from typing import Literal, Union
+from typing import Callable, Literal, Union
 
 import numpy as np
 from monai.data import DataLoader as MonaiDataLoader
 from monai.metrics import DiceMetric, Metric
 from torch.utils.data import DataLoader as PyTorchDataLoader
 
-from modules.base.trainer import BaseTrainer
+from modules.base.trainer import BaseTrainer, SmatDatasetTrainer
 
 DataLoader = Union[MonaiDataLoader, PyTorchDataLoader]
 
@@ -22,9 +22,10 @@ class SegmentationTrainer(BaseTrainer):
         metric: Metric = DiceMetric(include_background=True, reduction="mean", get_not_nans=False),
         checkpoint_dir: str = "./checkpoints/",
         device: Literal["cuda", "cpu"] = "cuda",
+        unpack_item: Callable | Literal["monai", "pytorch"] = "monai",
         dev: bool = False,
     ):
-        super().__init__(max_iter, eval_step, metric, checkpoint_dir, device, dev)
+        super().__init__(max_iter, eval_step, metric, None, checkpoint_dir, device, unpack_item, dev)
 
     def train(
         self,
@@ -99,3 +100,59 @@ class ChainShuffleIterator:
 
 def chain_shuffle(*dataloaders):
     return ChainShuffleIterator(*dataloaders)
+
+
+class SmatDatasetSegmentationTrainer(SmatDatasetTrainer):
+    alias = "SmatSegTrainer"
+
+    def __init__(
+        self,
+        max_iter: int = 10000,
+        eval_step: int = 500,
+        metric: Metric = DiceMetric(include_background=True, reduction="mean", get_not_nans=False),
+        checkpoint_dir: str = "./checkpoints/",
+        device: Literal["cuda", "cpu"] = "cuda",
+        dev: bool = False,
+    ):
+        super().__init__(max_iter, eval_step, metric, None, checkpoint_dir, device, dev)
+
+    def train(
+        self,
+        module,
+        updater,
+        *,
+        ct_dataloader: tuple[DataLoader, DataLoader] | None = None,
+        mr_dataloader: tuple[DataLoader, DataLoader] | None = None,
+    ):
+        valid_ct_data = ct_dataloader[0] and ct_dataloader[1]
+        valid_mr_data = mr_dataloader[0] and mr_dataloader[1]
+
+        if valid_ct_data and valid_mr_data:
+            train_dataloader = chain_shuffle(ct_dataloader[0], mr_dataloader[0])
+            val_dataloader = chain_shuffle(ct_dataloader[1], mr_dataloader[1])
+        elif valid_ct_data:
+            train_dataloader, val_dataloader = ct_dataloader[0], ct_dataloader[1]
+        elif valid_mr_data:
+            train_dataloader, val_dataloader = mr_dataloader[0], mr_dataloader[1]
+        else:
+            # train_dataloader = train_dataloader
+            # val_dataloader = val_dataloader
+            pass
+
+        if train_dataloader is None:
+            raise ValueError(
+                "No dataloader specified for training."
+                "Please provide a valid train_dataloader or both ct_dataloader and mr_dataloader."
+            )
+        if val_dataloader is None:
+            raise ValueError(
+                "No dataloader specified for validation."
+                "Please provide a valid val_dataloader or both ct_dataloader and mr_dataloader."
+            )
+
+        super().train(
+            module,
+            updater,
+            train_dataloader=train_dataloader,
+            val_dataloader=val_dataloader,
+        )
