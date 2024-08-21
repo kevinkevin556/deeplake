@@ -3,7 +3,7 @@ from pathlib import Path
 
 import yaml
 
-from networks.cyclegan import CycleGANModel
+from networks.cyclegan import CustomCycleGANModel, CycleGANModel
 
 
 def get_option(opt_file_path: str):

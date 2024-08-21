@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.nn.modules.loss import _Loss
 
 
 # Dimension hint for pytorch tensors
@@ -9,7 +10,7 @@ class tensor:
         return torch.Tensor
 
 
-class InfoNCE(nn.Module):
+class InfoNCE(_Loss, nn.Module):
     """
     Calculates the InfoNCE loss for self-supervised learning.
     This contrastive loss enforces the embeddings of similar (positive) samples to be close
