@@ -13,7 +13,12 @@ from monai.metrics import Metric
 from torch import nn
 from tqdm.auto import tqdm
 
-from modules.base.validator import BaseValidator, get_output_and_mask
+from lib.datasets.dnb import (
+    discretize_and_backgroundify_masks,
+    discretize_and_backgroundify_preds,
+)
+from lib.tensor_shape import tensor
+from modules.base.validator import BaseValidator
 
 
 class CategoricalValidator(BaseValidator):
@@ -23,8 +28,9 @@ class CategoricalValidator(BaseValidator):
         num_classes: int,
         is_train: bool = False,
         device: Literal["cuda", "cpu"] = "cuda",
+        pred_logits: bool = True,
     ):
-        super().__init__(metric, is_train, device)
+        super().__init__(metric, is_train, device, pred_logits)
         self.num_classes = num_classes
 
     def validation(
@@ -33,6 +39,17 @@ class CategoricalValidator(BaseValidator):
         dataloader: DataLoader | Sequence[DataLoader],
         global_step: int | None = None,
     ) -> dict:
+        """
+        Perform the validation process.
+
+        Args:
+            module (nn.Module): The model to be validated.
+            dataloader (DataLoader | Sequence[DataLoader]): The dataloader(s) providing the validation data.
+            global_step (int | None): The current global step, if applicable.
+
+        Returns:
+            dict: A dictionary containing the mean validation metrics for 'ct' and 'mr' modalities and their overall mean.
+        """
 
         if not isinstance(dataloader, (list, tuple)):
             dataloader = [dataloader]
@@ -44,10 +61,7 @@ class CategoricalValidator(BaseValidator):
         for c in range(self.num_classes):
             val_metrics = {"ct": [], "mr": []}
             pbar = tqdm(
-                itertools.chain(*dataloader),
-                total=sum(len(dl) for dl in dataloader),
-                dynamic_ncols=True,
-                disable=True,
+                itertools.chain(*dataloader), total=sum(len(dl) for dl in dataloader), dynamic_ncols=True, disable=True
             )
             with torch.no_grad():
                 for batch in pbar:
@@ -60,15 +74,29 @@ class CategoricalValidator(BaseValidator):
                     assert modality_label in set(["ct", "mr"]), f"Unknown/Invalid modality {modality_label}"
                     assert 0 in background_classes, "0 should be included in background_classes"
 
-                    infer_out = module.inference(images)
-                    samples = decollate_batch({"prediction": infer_out, "ground_truth": masks})
-                    outputs, masks = get_output_and_mask(samples, num_classes, background_classes)
-                    outputs = [1 * (torch.argmax(out, dim=0) == c)[None, None, :] for out in outputs]
-                    masks = [m[None, [c], :] for m in masks]
+                    # Get inferred / forwarded results of module
+                    if getattr(module, "inference", False):
+                        try:
+                            infer_out = module.inference(images, modality=modality_label)
+                        except TypeError:
+                            infer_out = module.inference(images)
+                    else:
+                        infer_out = module.forward(images)
 
-                    # Compute validation metrics
+                    # Discretize the prediction and masks of ground truths
+                    samples = decollate_batch({"prediction": infer_out, "ground_truth": masks})
+                    preds: list[tensor["c w d"]] = discretize_and_backgroundify_preds(
+                        samples, num_classes, background_classes
+                    )
+                    masks: list[tensor["c w d"]] = discretize_and_backgroundify_masks(
+                        samples, num_classes, background_classes
+                    )
+                    class_binary_preds = [1 * (torch.argmax(p, dim=0) == c)[None, None, :] for p in preds]
+                    class_binary_masks = [m[None, [c], :] for m in masks]
+
+                    # Compute validation metrics, omit the calculation of masked catergories during training
                     if (not self.is_train) or (c not in set(background_classes) - {0}):
-                        self.metric(y_pred=outputs, y=masks)
+                        self.metric(y_pred=class_binary_preds, y=class_binary_masks)
                         batch_metric = self.metric.aggregate().item()
                         val_metrics[modality_label] += [batch_metric]
                         self.metric.reset()

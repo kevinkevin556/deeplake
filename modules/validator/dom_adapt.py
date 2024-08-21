@@ -11,7 +11,11 @@ from monai.metrics import Metric
 from torch import nn
 from tqdm.auto import tqdm
 
-from modules.base.validator import BaseValidator, get_output_and_mask
+from lib.datasets.dnb import (
+    discretize_and_backgroundify_masks,
+    discretize_and_backgroundify_preds,
+)
+from modules.base.validator import BaseValidator
 
 
 class DomValidator(BaseValidator):
@@ -75,10 +79,11 @@ class DomValidator(BaseValidator):
 
                 infer_out = module.inference(images)
                 samples = decollate_batch({"prediction": infer_out, "ground_truth": masks})
-                outputs, masks = get_output_and_mask(samples, num_classes, background_classes)
+                preds: list = discretize_and_backgroundify_preds(samples, num_classes, background_classes)
+                masks: list = discretize_and_backgroundify_masks(samples, num_classes, background_classes)
 
                 # Compute validation metrics
-                self.metric(y_pred=outputs, y=masks)
+                self.metric(y_pred=preds, y=masks)
                 batch_metric = self.metric.aggregate().item()
                 val_metrics += [batch_metric]
                 self.metric.reset()
