@@ -2,12 +2,13 @@ import datetime
 import inspect
 import os
 import shutil
+import warnings
 from datetime import datetime
 from pathlib import Path
 
 from jsonargparse import CLI, ArgumentParser
 from jsonargparse.typing import Path_fr
-from monai.metrics import DiceMetric
+from monai.metrics import DiceMetric, HausdorffDistanceMetric
 from monai.utils import set_determinism
 from ruamel.yaml import YAML
 from torch import nn
@@ -16,7 +17,8 @@ from lib.datasets.dataset_wrapper import Dataset
 from modules.base.trainer import BaseTrainer
 from modules.base.updater import BaseUpdater
 from modules.base.validator import BaseValidator
-from modules.validator.summary import SummmaryValidator
+from modules.validator.seg_visualizer import SegVisualizer
+from modules.validator.summary import SmatSummmaryValidator
 
 
 def setup(
@@ -52,8 +54,8 @@ def setup(
 
     # default evaluator for testing set: SummaryValidator
     if evaluator is None:
-        num_classes = getattr(ct_data, "num_classes", mr_data.num_classes)
-        evaluator = SummmaryValidator(
+        num_classes = getattr(ct_data, "num_classes", getattr(mr_data, "num_classes", None))
+        evaluator = SmatSummmaryValidator(
             metric=DiceMetric(include_background=True, reduction="mean", get_not_nans=False),
             num_classes=num_classes,
         )
@@ -87,12 +89,15 @@ def save_source_to(dir_path, objects):
 
 def main():
     ct_data, mr_data, module, trainer, updater, evaluator = CLI(setup, parser_mode="omegaconf")
+    num_classes = getattr(ct_data, "num_classes", getattr(mr_data, "num_classes", None))
+    assert num_classes is not None
+
     components = [module, trainer, updater, evaluator]
     if ct_data.in_use:
         components += [ct_data, ct_data.train_transform, ct_data.test_transform]
     if mr_data.in_use:
         components = [mr_data, mr_data.train_transform, mr_data.test_transform]
-    # save_config_to(trainer.checkpoint_dir)
+    save_config_to(trainer.checkpoint_dir)
     save_source_to(trainer.checkpoint_dir, objects=components)
     ct_dataloader = ct_data.get_data()
     mr_dataloader = mr_data.get_data()
@@ -102,8 +107,35 @@ def main():
         ct_dataloader=ct_dataloader,
         mr_dataloader=mr_dataloader,
     )
-    performance = evaluator.validation(module, dataloader=(ct_dataloader[2], mr_dataloader[2]))
-    print(performance)
+    # performance = evaluator.validation(module, dataloader=(ct_dataloader[2], mr_dataloader[2]))
+    # print(performance)
+
+    dice_evaluator = SmatSummmaryValidator(
+        metric=DiceMetric(include_background=True, reduction="mean", get_not_nans=False),
+        num_classes=num_classes,
+    )
+    dice = dice_evaluator.validation(module, dataloader=(ct_dataloader[2], mr_dataloader[2]))
+    print(dice)
+    dice.to_csv(f"{trainer.checkpoint_dir}/dice.csv")
+
+    print("---------------------------")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        hausdorff_evaluator = SmatSummmaryValidator(
+            metric=HausdorffDistanceMetric(include_background=True, reduction="mean", get_not_nans=False),
+            num_classes=num_classes,
+        )
+        hausdorff = hausdorff_evaluator.validation(module, dataloader=(ct_dataloader[2], mr_dataloader[2]))
+        print(hausdorff)
+        hausdorff.to_csv(f"{trainer.checkpoint_dir}/hausdorff.csv")
+
+    visualizer = SegVisualizer(
+        num_classes=num_classes,
+        output_dir=f"{trainer.checkpoint_dir}/images",
+        ground_truth=True,
+    )
+    visualizer.validation(module, dataloader=(ct_dataloader[2], mr_dataloader[2]))
 
 
 if __name__ == "__main__":
