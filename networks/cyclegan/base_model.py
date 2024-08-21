@@ -116,9 +116,9 @@ class BaseModel:
                 load_filename = f"{which_epoch}_net_{name}.pth"
                 load_path = os.path.join(self.save_dir, load_filename)
                 net = getattr(self, "net" + name)
-                if isinstance(net, torch.nn.DataParallel):
-                    net = net.module
-                print(f"loading the model from {load_path}")
+                # if isinstance(net, torch.nn.DataParallel):
+                # net = net.module
+                # print(f"loading the model from {load_path}")
                 # if you are using PyTorch newer than 0.4 (e.g., built from
                 # GitHub source), you can remove str() on self.device
                 state_dict = torch.load(load_path, map_location=str(self.device))

@@ -6,4 +6,4 @@
 
 # This directory is a copy of `pytorch-CycleGAN-and-pix2pix/models/``
 
-from .cycle_gan_model import CycleGANModel
+from .cycle_gan_model import CustomCycleGANModel, CycleGANModel
