@@ -6,13 +6,18 @@
 (LAKE).<br>
 > 簡單好用的深度學習訓練模板
 
-This repository is the official implementation of [My Paper Title](https://arxiv.org/abs/2030.12345). 
->📋  Optional: include a graphic explaining your approach/main result, bibtex entry, link to demos, blog posts and tutorials
+### Framework Overview
+![image](images/structure.png)
 
-## Requirements
->📋  Describe how to set up the environment, e.g. pip/conda/docker commands, download datasets, etc...
-To install requirements:
 
+## Installation and Requirements
+1. Install [PyTorch](https://pytorch.org/) and clone this repo by running
+```
+git clone https://github.com/kevinkevin556/deeplake.git
+```
+2. (manual) Install dependencies: `monai[pydicom]`,  `ruamel.yaml`, `tqdm`, `loguru`, `tensorboard`, `dicom2nifti`,  `opencv-python`, `jsonargparse[omegaconf]`
+  * We utilize [jsonargparse](https://github.com/omni-us/jsonargparse) to generate a easy-to-use CLI automatically.
+3. (pip) Or run the following command in the terminal to install requirements
 ```setup
 pip install -r requirements.txt
 ```
