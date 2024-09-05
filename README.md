@@ -7,8 +7,14 @@
 > 簡單好用的深度學習訓練模板
 
 ### Framework Overview
+The framework / template is mainly built upon three components: `Trainer`, `Updater`, and `Validator`.
 ![image](images/structure.png)
 
+* **Trainer**: Manages the overall training process, including initialization, progress tracking, and coordinating between the updater and validator.
+* **Updater**: Handles network weight updates during training, with customizable update functions for different optimization strategies.
+* **Validator**: Evaluates model performance on validation data, providing metrics to assess training progress.
+
+The architecture is designed for flexibility, allowing users to easily customize or extend each component. This structure supports efficient development and experimentation with various neural network models and training approaches.
 
 ## Installation and Requirements
 1. Install [PyTorch](https://pytorch.org/) and clone this repo by running
