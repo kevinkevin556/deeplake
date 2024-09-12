@@ -9,7 +9,7 @@ from monai.metrics import DiceMetric, Metric
 from torch import Tensor
 from tqdm import tqdm
 
-from modules.base.trainer import BaseTrainer, TrainLogger
+from modules.base.trainer import SmatDatasetTrainer, TrainLogger
 from modules.base.validator import BaseValidator
 
 
@@ -30,7 +30,7 @@ def get_batch(ct_dataloader, mr_dataloader, mode):
     return batch1, batch2
 
 
-class PartTrainerDANN(BaseTrainer):
+class PartTrainerDANN(SmatDatasetTrainer):
     def __init__(
         self,
         max_iter: int = 10000,
@@ -41,7 +41,7 @@ class PartTrainerDANN(BaseTrainer):
         dev: bool = False,
         validator: BaseValidator | None = None,
     ):
-        super().__init__(max_iter, eval_step, metric, validator, checkpoint_dir, device, "monai", dev)
+        super().__init__(max_iter, eval_step, metric, validator, checkpoint_dir, device, dev)
 
         self.pbar_description = (
             "Training ({step} / {max_iter} Steps) ({modality1},{modality2})"
