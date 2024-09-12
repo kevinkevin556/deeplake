@@ -74,7 +74,8 @@ validator.validation(module=lenet, dataloader=test_dataloader)
 ## Supports
 
 * [Segmentation Models (smp)](https://github.com/qubvel-org/segmentation_models.pytorch)
-* [Monai]()
+* [Monai](https://monai.io/)
+* [SDUNet](https://github.com/TerryBase/SDUNet): A Spatial Deformable Kernel-based U-Net
 
 
 <!--
